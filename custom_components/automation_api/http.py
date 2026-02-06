@@ -4,6 +4,7 @@ from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN, CONF_API_KEY
+from .storage import create_or_update, delete as delete_automation, reload_automations
 
 
 class AutomationApiView(HomeAssistantView):
@@ -19,7 +20,8 @@ class AutomationApiView(HomeAssistantView):
             return self.json({"error": "unauthorized"}, status_code=401)
 
         data = await request.json()
-        # TODO: create/update automation via HA internal APIs
+        await create_or_update(hass, data)
+        await reload_automations(hass)
         return self.json({"status": "ok", "id": data.get("id")})
 
     async def delete(self, request):
@@ -28,8 +30,14 @@ class AutomationApiView(HomeAssistantView):
         api_key = entry.data.get(CONF_API_KEY) if entry else None
         if request.headers.get("X-API-KEY") != api_key:
             return self.json({"error": "unauthorized"}, status_code=401)
-        # TODO: delete automation via HA internal APIs
-        return self.json({"status": "ok"})
+
+        automation_id = request.query.get("id")
+        if not automation_id:
+            return self.json({"error": "missing id"}, status_code=400)
+
+        await delete_automation(hass, automation_id)
+        await reload_automations(hass)
+        return self.json({"status": "ok", "id": automation_id})
 
 
 def async_register_http(hass: HomeAssistant):

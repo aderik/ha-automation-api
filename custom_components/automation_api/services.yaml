@@ -27,6 +27,6 @@ delete_automation:
 test_automation:
   description: Fire an automation's actions (bypass trigger).
   fields:
-    automation_id:
+    entity_id:
       required: true
-      example: "my_auto"
+      example: "automation.my_auto"

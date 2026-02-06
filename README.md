@@ -8,13 +8,13 @@ Minimal scaffold to add REST/WS endpoints for automation create/update/delete/te
 3. Add integration: **Settings → Devices & Services → Add Integration → Automation API**.
 4. Copy the generated API key.
 
-## REST (planned)
+## REST
 - POST /api/automation_api/automations (X-API-KEY)
 - DELETE /api/automation_api/automations?id=...
 
-## WS (planned)
+## WS
 - automation_api/create
 - automation_api/delete
 - automation_api/test
 
-TODO: implement actual HA automation storage calls.
+Implementation: writes to .storage/automation and reloads automations.

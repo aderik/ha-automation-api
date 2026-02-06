@@ -9,6 +9,15 @@ from .ws import async_register_ws
 from .storage import create_or_update, delete as delete_automation, reload_automations
 
 
+async def log(hass: HomeAssistant, message: str):
+    await hass.services.async_call(
+        "system_log",
+        "write",
+        {"message": f"[automation_api] {message}", "level": "info"},
+        blocking=False,
+    )
+
+
 async def async_setup(hass: HomeAssistant, config: dict):
     hass.data.setdefault(DOMAIN, {})
     async_register_http(hass)
@@ -24,14 +33,17 @@ async def async_setup(hass: HomeAssistant, config: dict):
             "action": call.data.get("action", []),
             "mode": call.data.get("mode", "single"),
         }
+        await log(hass, f"service create_automation id={data.get('id')}")
         await create_or_update(hass, data)
         await reload_automations(hass)
 
     async def handle_delete(call):
+        await log(hass, f"service delete_automation id={call.data.get('automation_id')}")
         await delete_automation(hass, call.data.get("automation_id"))
         await reload_automations(hass)
 
     async def handle_test(call):
+        await log(hass, f"service test_automation entity_id={call.data.get('entity_id')}")
         await hass.services.async_call(
             "automation", "trigger", {"entity_id": call.data.get("entity_id"), "skip_condition": True}, blocking=True
         )

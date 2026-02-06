@@ -1,7 +1,7 @@
 {
   "domain": "automation_api",
   "name": "Automation API",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "documentation": "https://github.com/aderik/ha-automation-api",
   "requirements": [],
   "codeowners": ["@aderik"],

@@ -7,6 +7,15 @@ from .const import DOMAIN, CONF_API_KEY
 from .storage import create_or_update, delete as delete_automation, reload_automations
 
 
+async def log(hass: HomeAssistant, message: str):
+    await hass.services.async_call(
+        "system_log",
+        "write",
+        {"message": f"[automation_api] {message}", "level": "info"},
+        blocking=False,
+    )
+
+
 class AutomationApiView(HomeAssistantView):
     url = "/api/automation_api/automations"
     name = "api:automation_api:automations"
@@ -20,6 +29,7 @@ class AutomationApiView(HomeAssistantView):
             return self.json({"error": "unauthorized"}, status_code=401)
 
         data = await request.json()
+        await log(hass, f"HTTP create/update id={data.get('id')}")
         await create_or_update(hass, data)
         await reload_automations(hass)
         return self.json({"status": "ok", "id": data.get("id")})
@@ -35,6 +45,7 @@ class AutomationApiView(HomeAssistantView):
         if not automation_id:
             return self.json({"error": "missing id"}, status_code=400)
 
+        await log(hass, f"HTTP delete id={automation_id}")
         await delete_automation(hass, automation_id)
         await reload_automations(hass)
         return self.json({"status": "ok", "id": automation_id})

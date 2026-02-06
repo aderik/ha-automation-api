@@ -1,0 +1,20 @@
+# Automation API (Home Assistant custom integration)
+
+Minimal scaffold to add REST/WS endpoints for automation create/update/delete/test.
+
+## Install (HACS)
+1. Add this repo as a **custom repository** (type: Integration).
+2. Install and restart Home Assistant.
+3. Add integration: **Settings → Devices & Services → Add Integration → Automation API**.
+4. Copy the generated API key.
+
+## REST (planned)
+- POST /api/automation_api/automations (X-API-KEY)
+- DELETE /api/automation_api/automations?id=...
+
+## WS (planned)
+- automation_api/create
+- automation_api/delete
+- automation_api/test
+
+TODO: implement actual HA automation storage calls.

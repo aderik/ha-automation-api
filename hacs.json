@@ -1,0 +1,6 @@
+{
+  "name": "Automation API",
+  "content_in_root": false,
+  "render_readme": true,
+  "domains": ["automation_api"]
+}

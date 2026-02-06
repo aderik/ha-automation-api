@@ -1,0 +1,32 @@
+create_automation:
+  description: Create or update an automation by id.
+  fields:
+    automation_id:
+      required: true
+      example: "my_auto"
+    name:
+      required: true
+      example: "Test Auto"
+    trigger:
+      required: true
+      example: []
+    condition:
+      required: false
+      example: []
+    action:
+      required: true
+      example: []
+
+delete_automation:
+  description: Delete an automation by id.
+  fields:
+    automation_id:
+      required: true
+      example: "my_auto"
+
+test_automation:
+  description: Fire an automation's actions (bypass trigger).
+  fields:
+    automation_id:
+      required: true
+      example: "my_auto"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.file import write_utf8_file_atomic
+from homeassistant.util.file import write_utf8_file_atomic
 from homeassistant.util.yaml import load_yaml, dump
 
 AUTOMATION_CONFIG_PATH = "automations.yaml"

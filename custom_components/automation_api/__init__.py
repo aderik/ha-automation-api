@@ -7,15 +7,7 @@ from .const import DOMAIN
 from .http import async_register_http
 from .ws import async_register_ws
 from .storage import create_or_update, delete as delete_automation, reload_automations
-
-
-async def log(hass: HomeAssistant, message: str):
-    await hass.services.async_call(
-        "system_log",
-        "write",
-        {"message": f"[automation_api] {message}", "level": "info"},
-        blocking=False,
-    )
+from .utils import log
 
 
 async def async_setup(hass: HomeAssistant, config: dict):

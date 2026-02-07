@@ -2,18 +2,25 @@ from __future__ import annotations
 
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
+import voluptuous as vol
+from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN, CONF_API_KEY
 from .storage import create_or_update, delete as delete_automation, reload_automations
+from .utils import log
 
 
-async def log(hass: HomeAssistant, message: str):
-    await hass.services.async_call(
-        "system_log",
-        "write",
-        {"message": f"[automation_api] {message}", "level": "info"},
-        blocking=False,
-    )
+CREATE_SCHEMA = vol.Schema(
+    {
+        vol.Required("id"): cv.string,
+        vol.Required("name"): cv.string,
+        vol.Optional("description", default=""): cv.string,
+        vol.Required("trigger"): list,
+        vol.Optional("condition", default=[]): list,
+        vol.Required("action"): list,
+        vol.Optional("mode", default="single"): cv.string,
+    }
+)
 
 
 class AutomationApiView(HomeAssistantView):
@@ -28,7 +35,15 @@ class AutomationApiView(HomeAssistantView):
         if request.headers.get("X-API-KEY") != api_key:
             return self.json({"error": "unauthorized"}, status_code=401)
 
-        data = await request.json()
+        try:
+            data = await request.json()
+        except Exception:
+            return self.json({"error": "invalid json"}, status_code=400)
+        try:
+            data = CREATE_SCHEMA(data)
+        except vol.Invalid as e:
+            return self.json({"error": f"invalid payload: {e}"}, status_code=400)
+
         await log(hass, f"HTTP create/update id={data.get('id')}")
         await create_or_update(hass, data)
         await reload_automations(hass)

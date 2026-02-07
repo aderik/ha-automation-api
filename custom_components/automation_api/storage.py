@@ -1,38 +1,16 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
+
+STORE_VERSION = 1
+STORE_KEY = "automation"
 
 
-async def _read_storage(hass: HomeAssistant) -> dict:
-    path = hass.config.path(".storage/automation")
-    def _load():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {"version": 1, "key": "automation", "data": {"items": []}}
-    return await hass.async_add_executor_job(_load)
-
-
-async def _write_storage(hass: HomeAssistant, payload: dict) -> None:
-    path = hass.config.path(".storage/automation")
-    def _dump():
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-    await hass.async_add_executor_job(_dump)
-
-
-def _ensure_structure(payload: dict) -> dict:
-    if not isinstance(payload, dict):
-        payload = {"version": 1, "key": "automation", "data": {"items": []}}
-    payload.setdefault("version", 1)
-    payload.setdefault("key", "automation")
-    data = payload.setdefault("data", {})
-    data.setdefault("items", [])
-    return payload
+def _store(hass: HomeAssistant) -> Store:
+    return Store(hass, STORE_VERSION, STORE_KEY)
 
 
 def _normalize_item(item: dict) -> dict:
@@ -75,18 +53,20 @@ def _make_item(data: dict) -> dict:
 
 
 async def create_or_update(hass: HomeAssistant, data: dict) -> None:
-    payload = _ensure_structure(await _read_storage(hass))
-    items = payload["data"]["items"]
+    store = _store(hass)
+    payload = await store.async_load() or {"items": []}
+    items = payload.get("items", [])
     item = _make_item(data)
-    payload["data"]["items"] = _upsert(items, item)
-    await _write_storage(hass, payload)
+    payload["items"] = _upsert(items, item)
+    await store.async_save(payload)
 
 
 async def delete(hass: HomeAssistant, automation_id: str) -> None:
-    payload = _ensure_structure(await _read_storage(hass))
-    items = payload["data"]["items"]
-    payload["data"]["items"] = _delete(items, automation_id)
-    await _write_storage(hass, payload)
+    store = _store(hass)
+    payload = await store.async_load() or {"items": []}
+    items = payload.get("items", [])
+    payload["items"] = _delete(items, automation_id)
+    await store.async_save(payload)
 
 
 async def reload_automations(hass: HomeAssistant) -> None:

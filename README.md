@@ -17,4 +17,4 @@ Minimal scaffold to add REST/WS endpoints for automation create/update/delete/te
 - automation_api/delete
 - automation_api/test
 
-Implementation: writes to .storage/automation, reloads automations, and logs actions to HA system log.
+Implementation: uses HA Store API, reloads automations, logs actions to HA system log. REST/WS payloads are validated.

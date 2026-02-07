@@ -7,7 +7,7 @@ from homeassistant.helpers.storage import Store
 from .const import DOMAIN
 
 STORE_VERSION = 1
-STORE_KEY = "automation_api"
+STORE_KEY = "automation"
 
 
 def _store(hass: HomeAssistant) -> Store:

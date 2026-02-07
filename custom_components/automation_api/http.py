@@ -4,7 +4,7 @@ from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 import voluptuous as vol
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import area_registry, entity_registry
+from homeassistant.helpers import area_registry, entity_registry, device_registry
 
 from .const import DOMAIN, CONF_API_KEY
 from .storage import create_or_update, delete as delete_automation, reload_automations
@@ -167,6 +167,7 @@ class AutomationApiEntitiesView(HomeAssistantView):
 
         ar = area_registry.async_get(hass)
         er = entity_registry.async_get(hass)
+        dr = device_registry.async_get(hass)
 
         area_id = None
         if area_name:
@@ -179,14 +180,21 @@ class AutomationApiEntitiesView(HomeAssistantView):
         for e in er.entities.values():
             if domain and not e.entity_id.startswith(domain + "."):
                 continue
-            if area_id and e.area_id != area_id:
+
+            effective_area_id = e.area_id
+            if not effective_area_id and e.device_id:
+                dev = dr.devices.get(e.device_id)
+                if dev:
+                    effective_area_id = dev.area_id
+
+            if area_id and effective_area_id != area_id:
                 continue
             if search and search not in (e.name or "").lower() and search not in e.entity_id.lower():
                 continue
             items.append({
                 "entity_id": e.entity_id,
                 "name": e.name,
-                "area_id": e.area_id,
+                "area_id": effective_area_id,
             })
         return self.json({"items": items})
 

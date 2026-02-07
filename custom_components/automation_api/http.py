@@ -101,5 +101,36 @@ class AutomationApiView(HomeAssistantView):
         return self.json({"status": "ok", "id": automation_id})
 
 
+class AutomationApiTriggerView(HomeAssistantView):
+    url = "/api/automation_api/trigger"
+    name = "api:automation_api:trigger"
+    requires_auth = False
+
+    async def post(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        entry = hass.data.get(DOMAIN, {}).get("entry")
+        api_key = entry.data.get(CONF_API_KEY) if entry else None
+        if request.headers.get("X-API-KEY") != api_key:
+            return self.json({"error": "unauthorized"}, status_code=401)
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+
+        automation_id = data.get("id") or request.query.get("id")
+        if not automation_id:
+            return self.json({"error": "missing id"}, status_code=400)
+        if not automation_id.startswith("automation."):
+            automation_id = f"automation.{automation_id}"
+
+        await log(hass, f"HTTP trigger entity_id={automation_id}")
+        await hass.services.async_call(
+            "automation", "trigger", {"entity_id": automation_id, "skip_condition": True}, blocking=True
+        )
+        return self.json({"status": "ok", "entity_id": automation_id})
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
+    hass.http.register_view(AutomationApiTriggerView)

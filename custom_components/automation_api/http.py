@@ -23,6 +23,12 @@ CREATE_SCHEMA = vol.Schema(
 )
 
 
+def _check_api_key(hass: HomeAssistant, request):
+    entry = hass.data.get(DOMAIN, {}).get("entry")
+    api_key = entry.data.get(CONF_API_KEY) if entry else None
+    return request.headers.get("X-API-KEY") == api_key
+
+
 class AutomationApiView(HomeAssistantView):
     url = "/api/automation_api/automations"
     name = "api:automation_api:automations"
@@ -30,9 +36,7 @@ class AutomationApiView(HomeAssistantView):
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        entry = hass.data.get(DOMAIN, {}).get("entry")
-        api_key = entry.data.get(CONF_API_KEY) if entry else None
-        if request.headers.get("X-API-KEY") != api_key:
+        if not _check_api_key(hass, request):
             return self.json({"error": "unauthorized"}, status_code=401)
 
         query_id = request.query.get("id")
@@ -65,9 +69,7 @@ class AutomationApiView(HomeAssistantView):
 
     async def post(self, request):
         hass: HomeAssistant = request.app["hass"]
-        entry = hass.data.get(DOMAIN, {}).get("entry")
-        api_key = entry.data.get(CONF_API_KEY) if entry else None
-        if request.headers.get("X-API-KEY") != api_key:
+        if not _check_api_key(hass, request):
             return self.json({"error": "unauthorized"}, status_code=401)
 
         try:
@@ -86,9 +88,7 @@ class AutomationApiView(HomeAssistantView):
 
     async def delete(self, request):
         hass: HomeAssistant = request.app["hass"]
-        entry = hass.data.get(DOMAIN, {}).get("entry")
-        api_key = entry.data.get(CONF_API_KEY) if entry else None
-        if request.headers.get("X-API-KEY") != api_key:
+        if not _check_api_key(hass, request):
             return self.json({"error": "unauthorized"}, status_code=401)
 
         automation_id = request.query.get("id")
@@ -108,9 +108,7 @@ class AutomationApiTriggerView(HomeAssistantView):
 
     async def post(self, request):
         hass: HomeAssistant = request.app["hass"]
-        entry = hass.data.get(DOMAIN, {}).get("entry")
-        api_key = entry.data.get(CONF_API_KEY) if entry else None
-        if request.headers.get("X-API-KEY") != api_key:
+        if not _check_api_key(hass, request):
             return self.json({"error": "unauthorized"}, status_code=401)
 
         try:
@@ -125,9 +123,12 @@ class AutomationApiTriggerView(HomeAssistantView):
             automation_id = f"automation.{automation_id}"
 
         await log(hass, f"HTTP trigger entity_id={automation_id}")
-        await hass.services.async_call(
-            "automation", "trigger", {"entity_id": automation_id, "skip_condition": True}, blocking=True
-        )
+        try:
+            await hass.services.async_call(
+                "automation", "trigger", {"entity_id": automation_id, "skip_condition": True}, blocking=True
+            )
+        except Exception:
+            return self.json({"error": "automation not found or trigger failed"}, status_code=404)
         return self.json({"status": "ok", "entity_id": automation_id})
 
 

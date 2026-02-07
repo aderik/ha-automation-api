@@ -50,11 +50,13 @@ If you want to manage automations from **AI agents**, **n8n/Make**, **custom das
 ## 📡 REST API
 All REST endpoints require `X-API-KEY`.
 
-- **List**: `GET /api/automation_api/automations`
-- **Get one**: `GET /api/automation_api/automations?id=solaredge_power_notify`
+- **List automations**: `GET /api/automation_api/automations`
+- **Get automation**: `GET /api/automation_api/automations?id=solaredge_power_notify`
 - **Create/Update**: `POST /api/automation_api/automations`
 - **Delete**: `DELETE /api/automation_api/automations?id=solaredge_power_notify`
 - **Trigger**: `POST /api/automation_api/trigger` (body: `{"id":"solaredge_power_notify"}`)
+- **List areas**: `GET /api/automation_api/areas`
+- **List entities**: `GET /api/automation_api/entities?domain=light&area=Woonkamer&search=venster`
 
 <details>
 <summary><strong>Klik om cURL‑voorbeelden te zien</strong></summary>
@@ -73,6 +75,16 @@ curl -X POST -H "X-API-KEY: YOUR_KEY" -H "Content-Type: application/json" \
 curl -X POST -H "X-API-KEY: YOUR_KEY" -H "Content-Type: application/json" \
   http://ha:8123/api/automation_api/trigger \
   -d '{"id":"example"}'
+```
+
+```bash
+curl -H "X-API-KEY: YOUR_KEY" \
+  "http://ha:8123/api/automation_api/areas"
+```
+
+```bash
+curl -H "X-API-KEY: YOUR_KEY" \
+  "http://ha:8123/api/automation_api/entities?domain=light&area=Woonkamer"
 ```
 
 </details>

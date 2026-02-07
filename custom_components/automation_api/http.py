@@ -4,6 +4,7 @@ from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 import voluptuous as vol
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import area_registry, entity_registry
 
 from .const import DOMAIN, CONF_API_KEY
 from .storage import create_or_update, delete as delete_automation, reload_automations
@@ -132,6 +133,66 @@ class AutomationApiTriggerView(HomeAssistantView):
         return self.json({"status": "ok", "entity_id": automation_id})
 
 
+class AutomationApiAreasView(HomeAssistantView):
+    url = "/api/automation_api/areas"
+    name = "api:automation_api:areas"
+    requires_auth = False
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        if not _check_api_key(hass, request):
+            return self.json({"error": "unauthorized"}, status_code=401)
+
+        reg = area_registry.async_get(hass)
+        items = [
+            {"id": a.id, "name": a.name}
+            for a in reg.async_list_areas()
+        ]
+        return self.json({"items": items})
+
+
+class AutomationApiEntitiesView(HomeAssistantView):
+    url = "/api/automation_api/entities"
+    name = "api:automation_api:entities"
+    requires_auth = False
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        if not _check_api_key(hass, request):
+            return self.json({"error": "unauthorized"}, status_code=401)
+
+        domain = request.query.get("domain")
+        area_name = request.query.get("area")
+        search = (request.query.get("search") or "").lower()
+
+        ar = area_registry.async_get(hass)
+        er = entity_registry.async_get(hass)
+
+        area_id = None
+        if area_name:
+            for a in ar.async_list_areas():
+                if a.name.lower() == area_name.lower():
+                    area_id = a.id
+                    break
+
+        items = []
+        for e in er.entities.values():
+            if domain and not e.entity_id.startswith(domain + "."):
+                continue
+            if area_id and e.area_id != area_id:
+                continue
+            if search and search not in (e.name or "").lower() and search not in e.entity_id.lower():
+                continue
+            items.append({
+                "entity_id": e.entity_id,
+                "name": e.name,
+                "area_id": e.area_id,
+            })
+        return self.json({"items": items})
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
     hass.http.register_view(AutomationApiTriggerView)
+    hass.http.register_view(AutomationApiAreasView)
+    hass.http.register_view(AutomationApiEntitiesView)

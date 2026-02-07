@@ -25,7 +25,7 @@ async def ws_create(hass, connection, msg):
     data = normalize_payload(msg)
     await log(hass, f"WS create/update id={data.get('id')}")
     await create_or_update(hass, data)
-    await reload_automations(hass)
+    await reload_automations(hass, data.get("id"))
     connection.send_result(msg["id"], {"status": "ok", "id": data.get("id")})
 
 
@@ -39,7 +39,7 @@ async def ws_create(hass, connection, msg):
 async def ws_delete(hass, connection, msg):
     await log(hass, f"WS delete id={msg.get('automation_id')}")
     await delete_automation(hass, msg.get("automation_id"))
-    await reload_automations(hass)
+    await reload_automations(hass, msg.get("automation_id"))
     connection.send_result(msg["id"], {"status": "ok", "id": msg.get("automation_id")})
 
 

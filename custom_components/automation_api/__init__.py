@@ -35,12 +35,12 @@ async def async_setup(hass: HomeAssistant, config: dict):
         data = normalize_payload(call.data)
         await log(hass, f"service create_automation id={data.get('id')}")
         await create_or_update(hass, data)
-        await reload_automations(hass)
+        await reload_automations(hass, data.get("id"))
 
     async def handle_delete(call):
         await log(hass, f"service delete_automation id={call.data.get('automation_id')}")
         await delete_automation(hass, call.data.get("automation_id"))
-        await reload_automations(hass)
+        await reload_automations(hass, call.data.get("automation_id"))
 
     async def handle_test(call):
         await log(hass, f"service test_automation entity_id={call.data.get('entity_id')}")

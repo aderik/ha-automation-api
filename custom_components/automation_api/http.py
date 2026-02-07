@@ -81,7 +81,7 @@ class AutomationApiView(HomeAssistantView):
 
         await log(hass, f"HTTP create/update id={data.get('id')}")
         await create_or_update(hass, data)
-        await reload_automations(hass)
+        await reload_automations(hass, data.get("id"))
         return self.json({"status": "ok", "id": data.get("id")})
 
     async def delete(self, request):
@@ -97,7 +97,7 @@ class AutomationApiView(HomeAssistantView):
 
         await log(hass, f"HTTP delete id={automation_id}")
         await delete_automation(hass, automation_id)
-        await reload_automations(hass)
+        await reload_automations(hass, automation_id)
         return self.json({"status": "ok", "id": automation_id})
 
 

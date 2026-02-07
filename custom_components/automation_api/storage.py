@@ -4,13 +4,18 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from .const import DOMAIN
 
 STORE_VERSION = 1
 STORE_KEY = "automation"
 
 
 def _store(hass: HomeAssistant) -> Store:
-    return Store(hass, STORE_VERSION, STORE_KEY)
+    store = hass.data.setdefault(DOMAIN, {}).get("store")
+    if store is None:
+        store = Store(hass, STORE_VERSION, STORE_KEY)
+        hass.data.setdefault(DOMAIN, {})["store"] = store
+    return store
 
 
 def _normalize_item(item: dict) -> dict:

@@ -6,7 +6,7 @@ from homeassistant.core import HomeAssistant
 def normalize_payload(data: dict) -> dict:
     return {
         "id": data.get("automation_id") or data.get("id"),
-        "name": data.get("name"),
+        "name": data.get("name") or "(unnamed)",
         "description": data.get("description", ""),
         "trigger": data.get("trigger", []),
         "condition": data.get("condition", []),

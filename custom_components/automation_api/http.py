@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import os
+
+from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 import voluptuous as vol
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import area_registry, entity_registry, device_registry
+from homeassistant.util.yaml import load_yaml
 
-from .const import DOMAIN, CONF_API_KEY
+from .const import DOMAIN, CONF_API_KEY, LOG_FILE
 from .storage import create_or_update, delete as delete_automation, reload_automations
 from .utils import log
 
@@ -199,8 +203,56 @@ class AutomationApiEntitiesView(HomeAssistantView):
         return self.json({"items": items})
 
 
+class AutomationApiYamlView(HomeAssistantView):
+    url = "/api/automation_api/automations_yaml"
+    name = "api:automation_api:automations_yaml"
+    requires_auth = False
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        if not _check_api_key(hass, request):
+            return self.json({"error": "unauthorized"}, status_code=401)
+
+        query_id = request.query.get("id")
+        if query_id and query_id.startswith("automation."):
+            query_id = query_id.split(".", 1)[1]
+
+        path = hass.config.path("automations.yaml")
+        data = load_yaml(path) or []
+        if isinstance(data, dict):
+            items = data.get("automation", [])
+        else:
+            items = data
+
+        if query_id:
+            for it in items:
+                if it.get("id") == query_id:
+                    return self.json(it)
+            return self.json({"error": "not found"}, status_code=404)
+
+        return self.json({"items": items})
+
+
+class AutomationApiLogView(HomeAssistantView):
+    url = "/api/automation_api/log"
+    name = "api:automation_api:log"
+    requires_auth = False
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        if not _check_api_key(hass, request):
+            return self.json({"error": "unauthorized"}, status_code=401)
+
+        path = hass.config.path(LOG_FILE)
+        if not path or not os.path.exists(path):
+            return self.json({"error": "not found"}, status_code=404)
+        return web.FileResponse(path, headers={"Content-Type": "text/plain; charset=utf-8"})
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
     hass.http.register_view(AutomationApiTriggerView)
     hass.http.register_view(AutomationApiAreasView)
     hass.http.register_view(AutomationApiEntitiesView)
+    hass.http.register_view(AutomationApiYamlView)
+    hass.http.register_view(AutomationApiLogView)

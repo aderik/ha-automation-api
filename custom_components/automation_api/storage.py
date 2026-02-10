@@ -72,5 +72,4 @@ async def delete(hass: HomeAssistant, automation_id: str) -> None:
 
 
 async def reload_automations(hass: HomeAssistant, automation_id: str | None = None) -> None:
-    data = {"id": automation_id} if automation_id else None
-    await hass.services.async_call("automation", "reload", data, blocking=True)
+    await hass.services.async_call("automation", "reload", None, blocking=True)

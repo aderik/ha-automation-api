@@ -55,6 +55,7 @@ All REST endpoints require `X-API-KEY`.
 - **Create/Update**: `POST /api/automation_api/automations`
 - **Delete**: `DELETE /api/automation_api/automations?id=solaredge_power_notify`
 - **Trigger**: `POST /api/automation_api/trigger` (body: `{"id":"solaredge_power_notify"}`)
+- **Get automation YAML**: `GET /api/automation_api/automations_yaml?id=solaredge_power_notify`
 - **List areas**: `GET /api/automation_api/areas`
 - **List entities**: `GET /api/automation_api/entities?domain=light&area=Woonkamer&search=venster`
 
@@ -63,6 +64,11 @@ All REST endpoints require `X-API-KEY`.
 
 ```bash
 curl -H "X-API-KEY: YOUR_KEY" http://ha:8123/api/automation_api/automations
+```
+
+```bash
+curl -H "X-API-KEY: YOUR_KEY" \
+  "http://ha:8123/api/automation_api/automations_yaml?id=example"
 ```
 
 ```bash

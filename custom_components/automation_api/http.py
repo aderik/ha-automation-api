@@ -31,6 +31,8 @@ CREATE_SCHEMA = vol.Schema(
 def _check_api_key(hass: HomeAssistant, request):
     entry = hass.data.get(DOMAIN, {}).get("entry")
     api_key = entry.data.get(CONF_API_KEY) if entry else None
+    if not api_key:
+        return False
     return request.headers.get("X-API-KEY") == api_key
 
 

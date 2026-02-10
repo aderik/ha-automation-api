@@ -220,11 +220,14 @@ class AutomationApiYamlView(HomeAssistantView):
             query_id = query_id.split(".", 1)[1]
 
         path = hass.config.path("automations.yaml")
-        data = load_yaml(path) or []
-        if isinstance(data, dict):
-            items = data.get("automation", [])
-        else:
-            items = data
+
+        def _load():
+            data = load_yaml(path) or []
+            if isinstance(data, dict):
+                return data.get("automation", [])
+            return data
+
+        items = await hass.async_add_executor_job(_load)
 
         if query_id:
             for it in items:

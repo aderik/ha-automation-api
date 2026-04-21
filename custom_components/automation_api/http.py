@@ -14,6 +14,7 @@ from .const import DOMAIN, CONF_API_KEY, LOG_FILE
 from .storage import create_or_update, delete as delete_automation, reload_automations
 from .utils import log
 from . import package
+from . import lovelace as lovelace_mod
 
 
 CREATE_SCHEMA = vol.Schema(
@@ -580,6 +581,258 @@ class RestartView(_AuthedView):
         return self.json({"status": "scheduled"})
 
 
+# --- Lovelace dashboards -------------------------------------------------
+
+class LovelaceDashboardsView(_AuthedView):
+    url = "/api/automation_api/lovelace/dashboards"
+    name = "api:automation_api:lovelace:dashboards"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        try:
+            items = await lovelace_mod.list_dashboards(hass)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"items": items})
+
+    async def post(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        url_path = data.get("url_path")
+        title = data.get("title")
+        if not url_path or not title:
+            return self.json(
+                {"error": "'url_path' and 'title' are required"},
+                status_code=400,
+            )
+        await log(hass, f"HTTP create dashboard {url_path}")
+        try:
+            created = await lovelace_mod.create_dashboard(
+                hass,
+                url_path=url_path,
+                title=title,
+                icon=data.get("icon"),
+                show_in_sidebar=bool(data.get("show_in_sidebar", True)),
+                require_admin=bool(data.get("require_admin", False)),
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        except Exception as e:
+            return self.json({"error": f"create failed: {e}"}, status_code=500)
+        return self.json({"status": "ok", "dashboard": created})
+
+
+class LovelaceDashboardItemView(_AuthedView):
+    url = "/api/automation_api/lovelace/dashboards/{url_path}"
+    name = "api:automation_api:lovelace:dashboard"
+
+    async def patch(self, request, url_path):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        await log(hass, f"HTTP update dashboard {url_path}")
+        try:
+            updated = await lovelace_mod.update_dashboard(hass, url_path, data)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        except Exception as e:
+            return self.json({"error": f"update failed: {e}"}, status_code=500)
+        return self.json({"status": "ok", "dashboard": updated})
+
+    async def delete(self, request, url_path):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        await log(hass, f"HTTP delete dashboard {url_path}")
+        try:
+            removed = await lovelace_mod.delete_dashboard(hass, url_path)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        if not removed:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"status": "ok", "url_path": url_path})
+
+
+class LovelaceConfigView(_AuthedView):
+    url = "/api/automation_api/lovelace/config/{url_path}"
+    name = "api:automation_api:lovelace:config"
+
+    async def get(self, request, url_path):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        try:
+            cfg = await lovelace_mod.get_config(hass, url_path)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        if cfg is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json(cfg)
+
+    async def put(self, request, url_path):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        await log(hass, f"HTTP overwrite dashboard config {url_path}")
+        try:
+            await lovelace_mod.set_config(hass, url_path, data)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        except Exception as e:
+            return self.json({"error": f"save failed: {e}"}, status_code=500)
+        return self.json({"status": "ok", "url_path": url_path})
+
+
+class LovelaceViewView(_AuthedView):
+    url = "/api/automation_api/lovelace/view/{url_path}"
+    name = "api:automation_api:lovelace:view:append"
+
+    async def post(self, request, url_path):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        await log(hass, f"HTTP append view to {url_path}")
+        try:
+            result = await lovelace_mod.append_view(hass, url_path, data)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        except Exception as e:
+            return self.json({"error": f"append view failed: {e}"}, status_code=500)
+        return self.json({"status": "ok", **result})
+
+
+class LovelaceViewItemView(_AuthedView):
+    url = "/api/automation_api/lovelace/view/{url_path}/{view_index}"
+    name = "api:automation_api:lovelace:view:item"
+
+    async def put(self, request, url_path, view_index):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        try:
+            idx = int(view_index)
+        except ValueError:
+            return self.json({"error": "view_index must be int"}, status_code=400)
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        await log(hass, f"HTTP replace view {url_path}/{idx}")
+        try:
+            result = await lovelace_mod.replace_view(hass, url_path, idx, data)
+        except (ValueError, IndexError) as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"status": "ok", **result})
+
+    async def delete(self, request, url_path, view_index):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        try:
+            idx = int(view_index)
+        except ValueError:
+            return self.json({"error": "view_index must be int"}, status_code=400)
+        await log(hass, f"HTTP delete view {url_path}/{idx}")
+        try:
+            result = await lovelace_mod.delete_view(hass, url_path, idx)
+        except (ValueError, IndexError) as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"status": "ok", **result})
+
+
+class LovelaceCardView(_AuthedView):
+    url = "/api/automation_api/lovelace/card/{url_path}/{view_index}"
+    name = "api:automation_api:lovelace:card:append"
+
+    async def post(self, request, url_path, view_index):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        try:
+            vidx = int(view_index)
+        except ValueError:
+            return self.json({"error": "view_index must be int"}, status_code=400)
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        await log(hass, f"HTTP append card {url_path}/{vidx}")
+        try:
+            result = await lovelace_mod.append_card(hass, url_path, vidx, data)
+        except (ValueError, IndexError) as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"status": "ok", **result})
+
+
+class LovelaceCardItemView(_AuthedView):
+    url = "/api/automation_api/lovelace/card/{url_path}/{view_index}/{card_index}"
+    name = "api:automation_api:lovelace:card:item"
+
+    async def put(self, request, url_path, view_index, card_index):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        try:
+            vidx = int(view_index)
+            cidx = int(card_index)
+        except ValueError:
+            return self.json({"error": "indices must be int"}, status_code=400)
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        await log(hass, f"HTTP replace card {url_path}/{vidx}/{cidx}")
+        try:
+            result = await lovelace_mod.replace_card(
+                hass, url_path, vidx, cidx, data
+            )
+        except (ValueError, IndexError) as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"status": "ok", **result})
+
+    async def delete(self, request, url_path, view_index, card_index):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        try:
+            vidx = int(view_index)
+            cidx = int(card_index)
+        except ValueError:
+            return self.json({"error": "indices must be int"}, status_code=400)
+        await log(hass, f"HTTP delete card {url_path}/{vidx}/{cidx}")
+        try:
+            result = await lovelace_mod.delete_card(hass, url_path, vidx, cidx)
+        except (ValueError, IndexError) as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"status": "ok", **result})
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
     hass.http.register_view(AutomationApiTriggerView)
@@ -598,3 +851,10 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(NotifyGroupItemView)
     hass.http.register_view(ReloadView)
     hass.http.register_view(RestartView)
+    hass.http.register_view(LovelaceDashboardsView)
+    hass.http.register_view(LovelaceDashboardItemView)
+    hass.http.register_view(LovelaceConfigView)
+    hass.http.register_view(LovelaceViewView)
+    hass.http.register_view(LovelaceViewItemView)
+    hass.http.register_view(LovelaceCardView)
+    hass.http.register_view(LovelaceCardItemView)

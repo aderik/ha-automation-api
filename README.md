@@ -141,6 +141,35 @@ Supported types: `sensor`, `binary_sensor`, `switch`, `button`, `number`, `selec
 
 ---
 
+## 🎨 Lovelace dashboards
+Create and edit **storage‑mode** Lovelace dashboards programmatically. YAML‑mode dashboards are read‑only and writes are refused with `400`.
+
+### Dashboards themselves
+- `GET /api/automation_api/lovelace/dashboards` — list all
+- `POST /api/automation_api/lovelace/dashboards` — create new (`{url_path, title, icon?, show_in_sidebar?, require_admin?}`)
+- `PATCH /api/automation_api/lovelace/dashboards/{url_path}` — update metadata
+- `DELETE /api/automation_api/lovelace/dashboards/{url_path}`
+
+Use `default` as `{url_path}` to reference the Overview dashboard.
+
+### Full config
+- `GET /api/automation_api/lovelace/config/{url_path}` — returns `{views: [...], ...}`
+- `PUT /api/automation_api/lovelace/config/{url_path}` — overwrite
+
+### Views (append / replace / delete inside a dashboard)
+- `POST /api/automation_api/lovelace/view/{url_path}` — append view, body: view dict
+- `PUT /api/automation_api/lovelace/view/{url_path}/{view_index}` — replace
+- `DELETE /api/automation_api/lovelace/view/{url_path}/{view_index}`
+
+### Cards (append / replace / delete inside a view)
+- `POST /api/automation_api/lovelace/card/{url_path}/{view_index}` — append card
+- `PUT /api/automation_api/lovelace/card/{url_path}/{view_index}/{card_index}` — replace
+- `DELETE /api/automation_api/lovelace/card/{url_path}/{view_index}/{card_index}`
+
+After any save, HA fires `lovelace_updated` so open browsers pick up the change on next refresh.
+
+---
+
 ## 🔌 WebSocket
 - `automation_api/create`
 - `automation_api/delete`

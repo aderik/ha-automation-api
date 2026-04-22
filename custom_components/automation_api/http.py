@@ -15,6 +15,7 @@ from .storage import create_or_update, delete as delete_automation, reload_autom
 from .utils import log
 from . import package
 from . import lovelace as lovelace_mod
+from . import registry as registry_mod
 
 
 CREATE_SCHEMA = vol.Schema(
@@ -833,6 +834,211 @@ class LovelaceCardItemView(_AuthedView):
         return self.json({"status": "ok", **result})
 
 
+# --- Entity / Device / Config-entries registries ------------------------
+
+def _bool_query(request, name):
+    v = request.query.get(name)
+    if v is None:
+        return None
+    return v.lower() in ("1", "true", "yes")
+
+
+class EntityRegistryListView(_AuthedView):
+    url = "/api/automation_api/entity_registry"
+    name = "api:automation_api:entity_registry:list"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        items = await registry_mod.list_entities(
+            hass,
+            domain=request.query.get("domain"),
+            platform=request.query.get("platform"),
+            device_id=request.query.get("device_id"),
+            area_id=request.query.get("area_id"),
+            config_entry_id=request.query.get("config_entry_id"),
+            disabled=_bool_query(request, "disabled"),
+        )
+        return self.json({"items": items})
+
+
+class EntityRegistryItemView(_AuthedView):
+    url = "/api/automation_api/entity_registry/{entity_id}"
+    name = "api:automation_api:entity_registry:item"
+
+    async def get(self, request, entity_id):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        item = await registry_mod.get_entity(hass, entity_id)
+        if item is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json(item)
+
+    async def patch(self, request, entity_id):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        await log(hass, f"HTTP update entity_registry {entity_id}")
+        try:
+            updated = await registry_mod.update_entity(hass, entity_id, data)
+        except Exception as e:
+            return self.json({"error": f"update failed: {e}"}, status_code=500)
+        if updated is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json(updated)
+
+    async def delete(self, request, entity_id):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        await log(hass, f"HTTP delete entity_registry {entity_id}")
+        removed = await registry_mod.delete_entity(hass, entity_id)
+        if not removed:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"status": "ok", "entity_id": entity_id})
+
+
+class DeviceRegistryListView(_AuthedView):
+    url = "/api/automation_api/device_registry"
+    name = "api:automation_api:device_registry:list"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        items = await registry_mod.list_devices(
+            hass,
+            area_id=request.query.get("area_id"),
+            manufacturer=request.query.get("manufacturer"),
+            model=request.query.get("model"),
+            integration=request.query.get("integration"),
+            config_entry_id=request.query.get("config_entry_id"),
+            disabled=_bool_query(request, "disabled"),
+        )
+        return self.json({"items": items})
+
+
+class DeviceRegistryItemView(_AuthedView):
+    url = "/api/automation_api/device_registry/{device_id}"
+    name = "api:automation_api:device_registry:item"
+
+    async def get(self, request, device_id):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        item = await registry_mod.get_device(hass, device_id)
+        if item is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json(item)
+
+    async def patch(self, request, device_id):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        await log(hass, f"HTTP update device_registry {device_id}")
+        try:
+            updated = await registry_mod.update_device(hass, device_id, data)
+        except Exception as e:
+            return self.json({"error": f"update failed: {e}"}, status_code=500)
+        if updated is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json(updated)
+
+    async def delete(self, request, device_id):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        await log(hass, f"HTTP delete device_registry {device_id}")
+        removed = await registry_mod.delete_device(hass, device_id)
+        if not removed:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"status": "ok", "device_id": device_id})
+
+
+class ConfigEntryListView(_AuthedView):
+    url = "/api/automation_api/config_entries"
+    name = "api:automation_api:config_entries:list"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        items = await registry_mod.list_config_entries(
+            hass, domain=request.query.get("domain")
+        )
+        return self.json({"items": items})
+
+
+class ConfigEntryItemView(_AuthedView):
+    url = "/api/automation_api/config_entries/{entry_id}"
+    name = "api:automation_api:config_entries:item"
+
+    async def get(self, request, entry_id):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        item = await registry_mod.get_config_entry(hass, entry_id)
+        if item is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json(item)
+
+    async def delete(self, request, entry_id):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        await log(hass, f"HTTP delete config_entry {entry_id}")
+        try:
+            ok = await registry_mod.remove_config_entry(hass, entry_id)
+        except Exception as e:
+            return self.json({"error": f"remove failed: {e}"}, status_code=500)
+        if not ok:
+            return self.json({"error": "not found or remove failed"}, status_code=404)
+        return self.json({"status": "ok", "entry_id": entry_id})
+
+
+class ConfigEntryActionView(_AuthedView):
+    url = "/api/automation_api/config_entries/{entry_id}/{action}"
+    name = "api:automation_api:config_entries:action"
+
+    async def post(self, request, entry_id, action):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+        await log(hass, f"HTTP config_entry action {entry_id} {action}")
+        try:
+            if action == "disable":
+                ok = await registry_mod.disable_config_entry(
+                    hass, entry_id, disable=True
+                )
+            elif action == "enable":
+                ok = await registry_mod.disable_config_entry(
+                    hass, entry_id, disable=False
+                )
+            elif action == "reload":
+                ok = await registry_mod.reload_config_entry(hass, entry_id)
+            else:
+                return self.json(
+                    {"error": f"unknown action: {action}"}, status_code=400
+                )
+        except Exception as e:
+            return self.json({"error": f"{action} failed: {e}"}, status_code=500)
+        if not ok:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"status": "ok", "entry_id": entry_id, "action": action})
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
     hass.http.register_view(AutomationApiTriggerView)
@@ -858,3 +1064,10 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(LovelaceViewItemView)
     hass.http.register_view(LovelaceCardView)
     hass.http.register_view(LovelaceCardItemView)
+    hass.http.register_view(EntityRegistryListView)
+    hass.http.register_view(EntityRegistryItemView)
+    hass.http.register_view(DeviceRegistryListView)
+    hass.http.register_view(DeviceRegistryItemView)
+    hass.http.register_view(ConfigEntryListView)
+    hass.http.register_view(ConfigEntryItemView)
+    hass.http.register_view(ConfigEntryActionView)

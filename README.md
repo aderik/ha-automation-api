@@ -170,6 +170,31 @@ After any save, HA fires `lovelace_updated` so open browsers pick up the change 
 
 ---
 
+## 🧹 Registry management
+Read and mutate Home Assistant's internal registries: useful for cleaning up orphan/duplicate entities, renaming devices, or disabling integrations entirely.
+
+### Entity registry
+- `GET /api/automation_api/entity_registry?domain=&platform=&device_id=&area_id=&config_entry_id=&disabled=` — list with filters
+- `GET /api/automation_api/entity_registry/{entity_id}` — full details (incl. `unique_id`, `platform`, `device_id`, `disabled_by`, `hidden_by`, `original_name`)
+- `PATCH /api/automation_api/entity_registry/{entity_id}` — update `name`, `icon`, `area_id`, `new_entity_id`, `disabled_by` (bool), `hidden_by` (bool)
+- `DELETE /api/automation_api/entity_registry/{entity_id}` — remove from registry (integration may re-add on reload)
+
+### Device registry
+- `GET /api/automation_api/device_registry?area_id=&manufacturer=&model=&integration=&config_entry_id=&disabled=` — list with filters
+- `GET /api/automation_api/device_registry/{device_id}` — full details
+- `PATCH /api/automation_api/device_registry/{device_id}` — update `name_by_user`, `area_id`, `disabled_by`
+- `DELETE /api/automation_api/device_registry/{device_id}` — remove device + cascades to its entities
+
+### Config entries (integrations)
+- `GET /api/automation_api/config_entries?domain=` — list installed integrations
+- `GET /api/automation_api/config_entries/{entry_id}`
+- `POST /api/automation_api/config_entries/{entry_id}/disable` — soft-disable
+- `POST /api/automation_api/config_entries/{entry_id}/enable`
+- `POST /api/automation_api/config_entries/{entry_id}/reload`
+- `DELETE /api/automation_api/config_entries/{entry_id}` — fully remove integration (cascades to all its devices/entities)
+
+---
+
 ## 🔌 WebSocket
 - `automation_api/create`
 - `automation_api/delete`

@@ -16,6 +16,7 @@ from .utils import log
 from . import package
 from . import lovelace as lovelace_mod
 from . import registry as registry_mod
+from . import history as history_mod
 
 
 CREATE_SCHEMA = vol.Schema(
@@ -1008,6 +1009,63 @@ class ConfigEntryItemView(_AuthedView):
         return self.json({"status": "ok", "entry_id": entry_id})
 
 
+class HistoryView(_AuthedView):
+    url = "/api/automation_api/history"
+    name = "api:automation_api:history"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        if not self._check(request):
+            return self._unauth()
+
+        entity_id_param = request.query.get("entity_id")
+        if not entity_id_param:
+            return self.json({"error": "missing entity_id"}, status_code=400)
+        entity_ids = [e.strip() for e in entity_id_param.split(",") if e.strip()]
+        if not entity_ids:
+            return self.json({"error": "missing entity_id"}, status_code=400)
+
+        try:
+            start_time, end_time = history_mod.parse_time_window(
+                start=request.query.get("start"),
+                end=request.query.get("end"),
+                hours=request.query.get("hours"),
+                days=request.query.get("days"),
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+
+        significant = _bool_query(request, "significant") or False
+        minimal = _bool_query(request, "minimal")
+        if minimal is None:
+            minimal = True
+        no_attributes = _bool_query(request, "no_attributes")
+        if no_attributes is None:
+            no_attributes = True
+
+        try:
+            items = await history_mod.fetch_history(
+                hass,
+                entity_ids=entity_ids,
+                start_time=start_time,
+                end_time=end_time,
+                significant=significant,
+                minimal=minimal,
+                no_attributes=no_attributes,
+            )
+        except Exception as e:
+            return self.json({"error": f"history failed: {e}"}, status_code=500)
+
+        return self.json(
+            {
+                "start": start_time.isoformat(),
+                "end": end_time.isoformat(),
+                "counts": {eid: len(v) for eid, v in items.items()},
+                "items": items,
+            }
+        )
+
+
 class ConfigEntryActionView(_AuthedView):
     url = "/api/automation_api/config_entries/{entry_id}/{action}"
     name = "api:automation_api:config_entries:action"
@@ -1071,3 +1129,4 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(ConfigEntryListView)
     hass.http.register_view(ConfigEntryItemView)
     hass.http.register_view(ConfigEntryActionView)
+    hass.http.register_view(HistoryView)

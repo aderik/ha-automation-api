@@ -170,6 +170,31 @@ After any save, HA fires `lovelace_updated` so open browsers pick up the change 
 
 ---
 
+## 📜 History (state changes)
+Query Home Assistant's recorder for state-change history of any entity. Useful for diagnosing flapping sensors or inspecting when an automation last ran.
+
+- `GET /api/automation_api/history?entity_id=sensor.x&hours=24` — last 24h of state changes
+- Multiple entities: `entity_id=sensor.x,sensor.y`
+- Time window:
+  - `hours=24` or `days=7` — relative to `end` (default now)
+  - `start=2026-05-22T00:00:00+00:00&end=2026-05-23T00:00:00+00:00` — absolute
+- Modifiers:
+  - `significant=true` — use HA's `get_significant_states` (filtered)
+  - `minimal=false` — include `last_updated` as well as `last_changed`
+  - `no_attributes=false` — keep attributes in the payload
+
+Response includes a `counts` map per entity (great for spotting flapping at a glance):
+```json
+{
+  "start": "2026-05-22T11:00:00+00:00",
+  "end":   "2026-05-23T11:00:00+00:00",
+  "counts": {"sensor.weer_verwachting_komende_uren": 47},
+  "items":  {"sensor.weer_verwachting_komende_uren": [{"state": "...", "last_changed": "..."}]}
+}
+```
+
+---
+
 ## 🧹 Registry management
 Read and mutate Home Assistant's internal registries: useful for cleaning up orphan/duplicate entities, renaming devices, or disabling integrations entirely.
 

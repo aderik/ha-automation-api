@@ -1,239 +1,191 @@
 <p align="center">
-  <a href="https://github.com/aderik/ha-automation-api/releases">
-    <img src="https://img.shields.io/github/v/release/aderik/ha-automation-api?style=for-the-badge" />
-  </a>
-  <a href="https://github.com/hacs/integration">
-    <img src="https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=for-the-badge" />
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/github/license/aderik/ha-automation-api?style=for-the-badge" />
-  </a>
-  <a href="https://www.buymeacoffee.com/aderik">
-    <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black" />
-  </a>
+  <a href="https://github.com/aderik/ha-automation-api/releases"><img src="https://img.shields.io/github/v/release/aderik/ha-automation-api" alt="Release" /></a>
+  <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5.svg" alt="HACS custom repository" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/aderik/ha-automation-api" alt="License" /></a>
 </p>
 
-# Automation API (Home Assistant custom integration)
+# Automation API
 
-**Full automation CRUD + trigger + list for Home Assistant** — via simple REST + WebSocket endpoints with an API‑key.
+A Home Assistant custom integration that exposes a REST and WebSocket API for
+managing configuration that the built-in API leaves out: automations,
+helpers, template entities, Lovelace dashboards, registries and recorder
+history. It is built for machine clients: AI agents, n8n or Make, custom
+dashboards and CI pipelines.
 
-If you want to manage automations from **AI agents**, **n8n/Make**, **custom dashboards**, or **CI/CD pipelines**, this integration fills a gap in HA’s built‑in APIs.
+A companion MCP server, [ha-automation-mcp](https://github.com/aderik/ha-automation-mcp),
+exposes every endpoint below as a tool for MCP-capable agents.
 
----
+## Features
 
-## ✨ Why this integration?
-- ✅ **Full REST CRUD + trigger + list** (not just create/update)
-- ✅ **API‑key auth** (simpler for machine‑to‑machine than LLATs)
-- ✅ **HACS‑installable**
-- ✅ **Writes to `automations.yaml`** — same flow as the HA UI
-- ✅ **WebSocket API** for real‑time integrations
+- Full CRUD, list and trigger for automations, written to `automations.yaml`
+  exactly as the Home Assistant UI does
+- Helpers (`input_*`), template entities, `history_stats` sensors and notify
+  groups, managed in a single package file
+- Storage-mode Lovelace dashboards: dashboards, views and cards
+- Entity, device and config-entry registries, including reload, enable,
+  disable and remove
+- Recorder history with per-entity change counts
+- Authenticated with Home Assistant's own long-lived access tokens
+- Installable through HACS
 
-## 🏆 How it compares
-| Feature | HA built‑in config API | Automation API (this) |
+## Installation
+
+1. In HACS, add this repository as a custom repository of type *Integration*.
+2. Install it and restart Home Assistant.
+3. Go to *Settings → Devices & services → Add integration* and choose
+   **Automation API**. There is nothing to configure.
+4. Create a long-lived access token for an **administrator** account
+   (profile → *Security*).
+
+## Authentication
+
+Every endpoint uses Home Assistant's own authentication, the same mechanism as
+`/api/states`:
+
+```
+Authorization: Bearer <long-lived access token>
+```
+
+The token must belong to an administrator; other tokens receive `401`.
+
+**Upgrading from 0.8.x or earlier:** the `X-API-KEY` header and the generated
+API key no longer exist. Send a bearer token instead. The integration does not
+need to be re-added.
+
+## REST API
+
+All paths are relative to `http://<home-assistant>:8123`.
+
+### Automations
+
+| Method | Path | Description |
 |---|---|---|
-| Documented & intended for external use | ❌ | ✅ |
-| REST **list** automations | ❌ | ✅ |
-| REST **trigger** automations | ❌ | ✅ |
-| Simple API‑key auth | ❌ (LLAT only) | ✅ |
-| HACS install | ❌ | ✅ |
+| `GET` | `/api/automation_api/automations` | List automations |
+| `GET` | `/api/automation_api/automations?id=<id>` | Get one automation (live state) |
+| `POST` | `/api/automation_api/automations` | Create or update (`{id, name, trigger, action, condition?, description?, mode?}`) |
+| `DELETE` | `/api/automation_api/automations?id=<id>` | Delete |
+| `POST` | `/api/automation_api/trigger` | Run the actions now, skipping conditions (`{"id": "<id>"}`) |
+| `GET` | `/api/automation_api/automations_yaml?id=<id>` | Raw YAML; omit `id` for the whole file |
+| `GET` | `/api/automation_api/areas` | List areas |
+| `GET` | `/api/automation_api/entities?domain=&area=&search=` | List entities with optional filters |
+| `GET` | `/api/automation_api/log` | The integration's own action log |
 
----
-
-## 🚀 Install (HACS)
-1. Add this repo as a **custom repository** (type: Integration).
-2. Install and restart Home Assistant.
-3. Add integration: **Settings → Devices & Services → Add Integration → Automation API**.
-4. Copy the generated API key.
-
----
-
-## 📡 REST API
-All REST endpoints require `X-API-KEY`.
-
-- **List automations**: `GET /api/automation_api/automations`
-- **Get automation**: `GET /api/automation_api/automations?id=solaredge_power_notify`
-- **Create/Update**: `POST /api/automation_api/automations`
-- **Delete**: `DELETE /api/automation_api/automations?id=solaredge_power_notify`
-- **Trigger**: `POST /api/automation_api/trigger` (body: `{"id":"solaredge_power_notify"}`)
-- **Get automation YAML**: `GET /api/automation_api/automations_yaml?id=solaredge_power_notify`
-- **List areas**: `GET /api/automation_api/areas`
-- **List entities**: `GET /api/automation_api/entities?domain=light&area=Woonkamer&search=venster`
-
-<details>
-<summary><strong>Klik om cURL‑voorbeelden te zien</strong></summary>
+Examples:
 
 ```bash
-curl -H "X-API-KEY: YOUR_KEY" http://ha:8123/api/automation_api/automations
-```
+curl -H "Authorization: Bearer $TOKEN" http://ha:8123/api/automation_api/automations
 
-```bash
-curl -H "X-API-KEY: YOUR_KEY" \
-  "http://ha:8123/api/automation_api/automations_yaml?id=example"
-```
-
-```bash
-curl -X POST -H "X-API-KEY: YOUR_KEY" -H "Content-Type: application/json" \
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   http://ha:8123/api/automation_api/automations \
   -d '{"id":"example","name":"Example","trigger":[],"action":[]}'
+
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  http://ha:8123/api/automation_api/trigger -d '{"id":"example"}'
 ```
 
-```bash
-curl -X POST -H "X-API-KEY: YOUR_KEY" -H "Content-Type: application/json" \
-  http://ha:8123/api/automation_api/trigger \
-  -d '{"id":"example"}'
-```
+### Managed configuration (packages)
 
-```bash
-curl -H "X-API-KEY: YOUR_KEY" \
-  "http://ha:8123/api/automation_api/areas"
-```
+Helpers, template entities, `history_stats` sensors and notify groups live in
+one package file, `<config>/packages/automation_api.yaml`. This needs a
+one-time addition to `configuration.yaml` and one restart:
 
-```bash
-curl -H "X-API-KEY: YOUR_KEY" \
-  "http://ha:8123/api/automation_api/entities?domain=light&area=Woonkamer"
-```
-
-</details>
-
----
-
-## 🧩 Managed configuration (packages)
-Beyond automations, the integration can manage **helpers, template sensors, history_stats sensors, and notify groups** via a single HA package file at `<config>/packages/automation_api.yaml`.
-
-**One‑time setup** — add this to your `configuration.yaml`:
 ```yaml
 homeassistant:
   packages: !include_dir_named packages
 ```
-Then restart HA once. After that, every endpoint below reloads the relevant domain automatically.
 
-### Helper endpoints (dict‑keyed: one id per helper)
-Supported domains: `input_boolean`, `input_datetime`, `input_number`, `input_select`, `input_text`, `input_button`.
+After that, each endpoint reloads the affected domain itself. The package file
+is owned by the integration; edit it through the API, not by hand.
 
-- **Upsert**: `PUT /api/automation_api/helpers/{domain}/{id}` — body: full config dict
-- **Get / Delete**: `GET|DELETE /api/automation_api/helpers/{domain}/{id}`
-- **List**: `GET /api/automation_api/helpers/{domain}`
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/automation_api/helpers/{domain}` | List helpers of a domain |
+| `GET` `PUT` `DELETE` | `/api/automation_api/helpers/{domain}/{id}` | Read, upsert (body: full config) or delete a helper |
+| `GET` | `/api/automation_api/template/{type}` | List template entities of a type |
+| `GET` `PUT` `DELETE` | `/api/automation_api/template/{type}/{name}` | Read, upsert or delete a template entity |
+| `GET` | `/api/automation_api/history_stats` | List `history_stats` sensors |
+| `GET` `PUT` `DELETE` | `/api/automation_api/history_stats/{name}` | Read, upsert or delete; takes effect after a restart |
+| `GET` | `/api/automation_api/notify_group` | List notify groups |
+| `GET` `PUT` `DELETE` | `/api/automation_api/notify_group/{name}` | Read, upsert (`{"services": [...]}`) or delete; takes effect after a restart |
+| `GET` `PUT` | `/api/automation_api/package` | Read or overwrite the whole package |
+| `POST` | `/api/automation_api/reload` | `{"domains": [...]}`, or an empty body for `homeassistant.reload_all` |
+| `POST` | `/api/automation_api/restart` | Restart Home Assistant |
 
-### Template entities
-Supported types: `sensor`, `binary_sensor`, `switch`, `button`, `number`, `select`.
+Helper domains: `input_boolean`, `input_datetime`, `input_number`,
+`input_select`, `input_text`, `input_button`. Template types: `sensor`,
+`binary_sensor`, `switch`, `button`, `number`, `select`.
 
-- **Upsert**: `PUT /api/automation_api/template/{type}/{name}` — body: template config (without `name`)
-- **Get / Delete**: `GET|DELETE /api/automation_api/template/{type}/{name}`
-- **List**: `GET /api/automation_api/template/{type}`
+### Lovelace dashboards
 
-### History stats sensors
-- **Upsert**: `PUT /api/automation_api/history_stats/{name}` — body: `{entity_id, state, type, duration, ...}`
-- **Get / Delete / List**: as above. Requires a HA restart to take effect.
+Only storage-mode dashboards can be written; YAML-mode dashboards are
+read-only and writes return `400`. Use `default` as `{url_path}` for the
+Overview dashboard. After every save, Home Assistant fires `lovelace_updated`.
 
-### Notify groups
-- **Upsert**: `PUT /api/automation_api/notify_group/{name}` — body: `{"services": ["mobile_app_x", ...]}`
-- Requires a HA restart to take effect.
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/automation_api/lovelace/dashboards` | List dashboards |
+| `POST` | `/api/automation_api/lovelace/dashboards` | Create (`{url_path, title, icon?, show_in_sidebar?, require_admin?}`) |
+| `PATCH` `DELETE` | `/api/automation_api/lovelace/dashboards/{url_path}` | Update metadata or delete |
+| `GET` `PUT` | `/api/automation_api/lovelace/config/{url_path}` | Read or overwrite the full config (`{views: [...]}`) |
+| `POST` | `/api/automation_api/lovelace/view/{url_path}` | Append a view |
+| `PUT` `DELETE` | `/api/automation_api/lovelace/view/{url_path}/{view_index}` | Replace or delete a view |
+| `POST` | `/api/automation_api/lovelace/card/{url_path}/{view_index}` | Append a card |
+| `PUT` `DELETE` | `/api/automation_api/lovelace/card/{url_path}/{view_index}/{card_index}` | Replace or delete a card |
 
-### Reload / restart
-- `POST /api/automation_api/reload` — body `{"domains": ["input_boolean", "template"]}` (or empty for `homeassistant.reload_all`)
-- `POST /api/automation_api/restart` — triggers `homeassistant.restart`
+### Registries
 
-### Raw package
-- `GET /api/automation_api/package` — returns the full managed package as JSON
-- `PUT /api/automation_api/package` — overwrites it (body: dict)
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/automation_api/entity_registry?domain=&platform=&device_id=&area_id=&config_entry_id=&disabled=` | List registry entities |
+| `GET` `PATCH` `DELETE` | `/api/automation_api/entity_registry/{entity_id}` | Read, update (`name`, `icon`, `area_id`, `new_entity_id`, `disabled_by`, `hidden_by`) or remove |
+| `GET` | `/api/automation_api/device_registry?area_id=&manufacturer=&model=&integration=&config_entry_id=&disabled=` | List devices |
+| `GET` `PATCH` `DELETE` | `/api/automation_api/device_registry/{device_id}` | Read, update (`name_by_user`, `area_id`, `disabled_by`) or remove with its entities |
+| `GET` | `/api/automation_api/config_entries?domain=` | List integrations |
+| `GET` `DELETE` | `/api/automation_api/config_entries/{entry_id}` | Read, or remove with all its devices and entities |
+| `POST` | `/api/automation_api/config_entries/{entry_id}/reload` | Reload an integration |
+| `POST` | `/api/automation_api/config_entries/{entry_id}/disable` | Disable an integration |
+| `POST` | `/api/automation_api/config_entries/{entry_id}/enable` | Enable an integration |
 
-> ⚠️ `packages/automation_api.yaml` is owned by this integration. Don't hand‑edit it; use the API.
+Removing a registry entity while its integration is still active lets the
+integration re-add it on the next reload; remove the device or the config
+entry instead.
 
----
+### History
 
-## 🎨 Lovelace dashboards
-Create and edit **storage‑mode** Lovelace dashboards programmatically. YAML‑mode dashboards are read‑only and writes are refused with `400`.
+`GET /api/automation_api/history?entity_id=sensor.x&hours=24` returns the
+recorder's state changes for one or more entities (`entity_id=sensor.x,sensor.y`).
 
-### Dashboards themselves
-- `GET /api/automation_api/lovelace/dashboards` — list all
-- `POST /api/automation_api/lovelace/dashboards` — create new (`{url_path, title, icon?, show_in_sidebar?, require_admin?}`)
-- `PATCH /api/automation_api/lovelace/dashboards/{url_path}` — update metadata
-- `DELETE /api/automation_api/lovelace/dashboards/{url_path}`
+| Parameter | Description |
+|---|---|
+| `hours`, `days` | Window length, ending at `end` (default: now) |
+| `start`, `end` | Absolute ISO 8601 bounds; override `hours` and `days` |
+| `significant=true` | Use `get_significant_states` instead of every change |
+| `minimal=false` | Include `last_updated` next to `last_changed` |
+| `no_attributes=false` | Keep attributes in the payload |
 
-Use `default` as `{url_path}` to reference the Overview dashboard.
+The response carries a `counts` map per entity, which shows flapping sensors
+at a glance:
 
-### Full config
-- `GET /api/automation_api/lovelace/config/{url_path}` — returns `{views: [...], ...}`
-- `PUT /api/automation_api/lovelace/config/{url_path}` — overwrite
-
-### Views (append / replace / delete inside a dashboard)
-- `POST /api/automation_api/lovelace/view/{url_path}` — append view, body: view dict
-- `PUT /api/automation_api/lovelace/view/{url_path}/{view_index}` — replace
-- `DELETE /api/automation_api/lovelace/view/{url_path}/{view_index}`
-
-### Cards (append / replace / delete inside a view)
-- `POST /api/automation_api/lovelace/card/{url_path}/{view_index}` — append card
-- `PUT /api/automation_api/lovelace/card/{url_path}/{view_index}/{card_index}` — replace
-- `DELETE /api/automation_api/lovelace/card/{url_path}/{view_index}/{card_index}`
-
-After any save, HA fires `lovelace_updated` so open browsers pick up the change on next refresh.
-
----
-
-## 📜 History (state changes)
-Query Home Assistant's recorder for state-change history of any entity. Useful for diagnosing flapping sensors or inspecting when an automation last ran.
-
-- `GET /api/automation_api/history?entity_id=sensor.x&hours=24` — last 24h of state changes
-- Multiple entities: `entity_id=sensor.x,sensor.y`
-- Time window:
-  - `hours=24` or `days=7` — relative to `end` (default now)
-  - `start=2026-05-22T00:00:00+00:00&end=2026-05-23T00:00:00+00:00` — absolute
-- Modifiers:
-  - `significant=true` — use HA's `get_significant_states` (filtered)
-  - `minimal=false` — include `last_updated` as well as `last_changed`
-  - `no_attributes=false` — keep attributes in the payload
-
-Response includes a `counts` map per entity (great for spotting flapping at a glance):
 ```json
 {
   "start": "2026-05-22T11:00:00+00:00",
-  "end":   "2026-05-23T11:00:00+00:00",
-  "counts": {"sensor.weer_verwachting_komende_uren": 47},
-  "items":  {"sensor.weer_verwachting_komende_uren": [{"state": "...", "last_changed": "..."}]}
+  "end": "2026-05-23T11:00:00+00:00",
+  "counts": {"sensor.outdoor_temperature": 47},
+  "items": {"sensor.outdoor_temperature": [{"state": "...", "last_changed": "..."}]}
 }
 ```
 
----
+## WebSocket API
 
-## 🧹 Registry management
-Read and mutate Home Assistant's internal registries: useful for cleaning up orphan/duplicate entities, renaming devices, or disabling integrations entirely.
+Commands `automation_api/create`, `automation_api/delete` and
+`automation_api/test`, with the same payloads as the REST endpoints.
 
-### Entity registry
-- `GET /api/automation_api/entity_registry?domain=&platform=&device_id=&area_id=&config_entry_id=&disabled=` — list with filters
-- `GET /api/automation_api/entity_registry/{entity_id}` — full details (incl. `unique_id`, `platform`, `device_id`, `disabled_by`, `hidden_by`, `original_name`)
-- `PATCH /api/automation_api/entity_registry/{entity_id}` — update `name`, `icon`, `area_id`, `new_entity_id`, `disabled_by` (bool), `hidden_by` (bool)
-- `DELETE /api/automation_api/entity_registry/{entity_id}` — remove from registry (integration may re-add on reload)
+## Notes
 
-### Device registry
-- `GET /api/automation_api/device_registry?area_id=&manufacturer=&model=&integration=&config_entry_id=&disabled=` — list with filters
-- `GET /api/automation_api/device_registry/{device_id}` — full details
-- `PATCH /api/automation_api/device_registry/{device_id}` — update `name_by_user`, `area_id`, `disabled_by`
-- `DELETE /api/automation_api/device_registry/{device_id}` — remove device + cascades to its entities
+Writes go to `automations.yaml` and the package file, followed by a reload of
+the affected domain. Every mutation is logged to `<config>/automation_api.log`.
+All payloads are validated before anything is written.
 
-### Config entries (integrations)
-- `GET /api/automation_api/config_entries?domain=` — list installed integrations
-- `GET /api/automation_api/config_entries/{entry_id}`
-- `POST /api/automation_api/config_entries/{entry_id}/disable` — soft-disable
-- `POST /api/automation_api/config_entries/{entry_id}/enable`
-- `POST /api/automation_api/config_entries/{entry_id}/reload`
-- `DELETE /api/automation_api/config_entries/{entry_id}` — fully remove integration (cascades to all its devices/entities)
+## License
 
----
-
-## 🔌 WebSocket
-- `automation_api/create`
-- `automation_api/delete`
-- `automation_api/test`
-
----
-
-## 📝 Notes
-Implementation writes to `automations.yaml` (like the HA UI), reloads automations, and logs actions to HA system log. REST/WS payloads are validated.
-
----
-
-<p align="center">
-  <a href="https://www.buymeacoffee.com/aderik">
-    <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black" />
-  </a>
-</p>
+[MIT](LICENSE)

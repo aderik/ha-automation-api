@@ -5,12 +5,13 @@ import os
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import Unauthorized
 import voluptuous as vol
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import area_registry, entity_registry, device_registry
 from homeassistant.util.yaml import load_yaml
 
-from .const import DOMAIN, CONF_API_KEY, LOG_FILE
+from .const import DOMAIN, LOG_FILE
 from .storage import create_or_update, delete as delete_automation, reload_automations
 from .utils import log
 from . import package
@@ -32,23 +33,20 @@ CREATE_SCHEMA = vol.Schema(
 )
 
 
-def _check_api_key(hass: HomeAssistant, request):
-    entry = hass.data.get(DOMAIN, {}).get("entry")
-    api_key = entry.data.get(CONF_API_KEY) if entry else None
-    if not api_key:
-        return False
-    return request.headers.get("X-API-KEY") == api_key
+def _require_admin(request) -> None:
+    """Every endpoint changes configuration, so mirror HA's own config API:
+    the bearer token must belong to an administrator."""
+    if not request["hass_user"].is_admin:
+        raise Unauthorized()
 
 
 class AutomationApiView(HomeAssistantView):
     url = "/api/automation_api/automations"
     name = "api:automation_api:automations"
-    requires_auth = False
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not _check_api_key(hass, request):
-            return self.json({"error": "unauthorized"}, status_code=401)
+        _require_admin(request)
 
         query_id = request.query.get("id")
         if query_id and not query_id.startswith("automation."):
@@ -80,8 +78,7 @@ class AutomationApiView(HomeAssistantView):
 
     async def post(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not _check_api_key(hass, request):
-            return self.json({"error": "unauthorized"}, status_code=401)
+        _require_admin(request)
 
         try:
             data = await request.json()
@@ -99,8 +96,7 @@ class AutomationApiView(HomeAssistantView):
 
     async def delete(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not _check_api_key(hass, request):
-            return self.json({"error": "unauthorized"}, status_code=401)
+        _require_admin(request)
 
         automation_id = request.query.get("id")
         if not automation_id:
@@ -115,12 +111,10 @@ class AutomationApiView(HomeAssistantView):
 class AutomationApiTriggerView(HomeAssistantView):
     url = "/api/automation_api/trigger"
     name = "api:automation_api:trigger"
-    requires_auth = False
 
     async def post(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not _check_api_key(hass, request):
-            return self.json({"error": "unauthorized"}, status_code=401)
+        _require_admin(request)
 
         try:
             data = await request.json()
@@ -146,12 +140,10 @@ class AutomationApiTriggerView(HomeAssistantView):
 class AutomationApiAreasView(HomeAssistantView):
     url = "/api/automation_api/areas"
     name = "api:automation_api:areas"
-    requires_auth = False
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not _check_api_key(hass, request):
-            return self.json({"error": "unauthorized"}, status_code=401)
+        _require_admin(request)
 
         reg = area_registry.async_get(hass)
         items = [
@@ -164,12 +156,10 @@ class AutomationApiAreasView(HomeAssistantView):
 class AutomationApiEntitiesView(HomeAssistantView):
     url = "/api/automation_api/entities"
     name = "api:automation_api:entities"
-    requires_auth = False
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not _check_api_key(hass, request):
-            return self.json({"error": "unauthorized"}, status_code=401)
+        _require_admin(request)
 
         domain = request.query.get("domain")
         area_name = request.query.get("area")
@@ -212,12 +202,10 @@ class AutomationApiEntitiesView(HomeAssistantView):
 class AutomationApiYamlView(HomeAssistantView):
     url = "/api/automation_api/automations_yaml"
     name = "api:automation_api:automations_yaml"
-    requires_auth = False
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not _check_api_key(hass, request):
-            return self.json({"error": "unauthorized"}, status_code=401)
+        _require_admin(request)
 
         query_id = request.query.get("id")
         if query_id and query_id.startswith("automation."):
@@ -245,12 +233,10 @@ class AutomationApiYamlView(HomeAssistantView):
 class AutomationApiLogView(HomeAssistantView):
     url = "/api/automation_api/log"
     name = "api:automation_api:log"
-    requires_auth = False
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not _check_api_key(hass, request):
-            return self.json({"error": "unauthorized"}, status_code=401)
+        _require_admin(request)
 
         path = hass.config.path(LOG_FILE)
         if not path or not os.path.exists(path):
@@ -259,15 +245,7 @@ class AutomationApiLogView(HomeAssistantView):
 
 
 class _AuthedView(HomeAssistantView):
-    """Base view enforcing the X-API-KEY header."""
-
-    requires_auth = False
-
-    def _check(self, request):
-        return _check_api_key(request.app["hass"], request)
-
-    def _unauth(self):
-        return self.json({"error": "unauthorized"}, status_code=401)
+    """Base view with a JSON-body helper; auth is HA's own (bearer token, admin)."""
 
     async def _json_body(self, request):
         try:
@@ -283,14 +261,12 @@ class PackageView(_AuthedView):
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         return self.json(await package.read_package(hass))
 
     async def put(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         data, err = await self._json_body(request)
         if err:
             return err
@@ -308,8 +284,7 @@ class HelpersListView(_AuthedView):
 
     async def get(self, request, domain):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         if domain not in package.HELPER_DOMAINS:
             return self.json({"error": f"unsupported domain: {domain}"}, status_code=400)
         return self.json({"items": await package.list_helpers(hass, domain)})
@@ -321,8 +296,7 @@ class HelperItemView(_AuthedView):
 
     async def get(self, request, domain, helper_id):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         if domain not in package.HELPER_DOMAINS:
             return self.json({"error": f"unsupported domain: {domain}"}, status_code=400)
         item = await package.get_helper(hass, domain, helper_id)
@@ -332,8 +306,7 @@ class HelperItemView(_AuthedView):
 
     async def put(self, request, domain, helper_id):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         if domain not in package.HELPER_DOMAINS:
             return self.json({"error": f"unsupported domain: {domain}"}, status_code=400)
         data, err = await self._json_body(request)
@@ -353,8 +326,7 @@ class HelperItemView(_AuthedView):
 
     async def delete(self, request, domain, helper_id):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         if domain not in package.HELPER_DOMAINS:
             return self.json({"error": f"unsupported domain: {domain}"}, status_code=400)
         await log(hass, f"HTTP delete helper {domain}/{helper_id}")
@@ -373,8 +345,7 @@ class TemplateListView(_AuthedView):
 
     async def get(self, request, ttype):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         if ttype not in package.TEMPLATE_TYPES:
             return self.json({"error": f"unsupported template type: {ttype}"}, status_code=400)
         return self.json({"items": await package.list_templates(hass, ttype)})
@@ -386,8 +357,7 @@ class TemplateItemView(_AuthedView):
 
     async def get(self, request, ttype, name):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         if ttype not in package.TEMPLATE_TYPES:
             return self.json({"error": f"unsupported template type: {ttype}"}, status_code=400)
         item = await package.get_template(hass, ttype, name)
@@ -397,8 +367,7 @@ class TemplateItemView(_AuthedView):
 
     async def put(self, request, ttype, name):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         if ttype not in package.TEMPLATE_TYPES:
             return self.json({"error": f"unsupported template type: {ttype}"}, status_code=400)
         data, err = await self._json_body(request)
@@ -418,8 +387,7 @@ class TemplateItemView(_AuthedView):
 
     async def delete(self, request, ttype, name):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         if ttype not in package.TEMPLATE_TYPES:
             return self.json({"error": f"unsupported template type: {ttype}"}, status_code=400)
         await log(hass, f"HTTP delete template {ttype}/{name}")
@@ -438,8 +406,7 @@ class HistoryStatsListView(_AuthedView):
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         return self.json({"items": await package.list_history_stats(hass)})
 
 
@@ -449,8 +416,7 @@ class HistoryStatsItemView(_AuthedView):
 
     async def get(self, request, name):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         item = await package.get_history_stats(hass, name)
         if item is None:
             return self.json({"error": "not found"}, status_code=404)
@@ -458,8 +424,7 @@ class HistoryStatsItemView(_AuthedView):
 
     async def put(self, request, name):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         data, err = await self._json_body(request)
         if err:
             return err
@@ -476,8 +441,7 @@ class HistoryStatsItemView(_AuthedView):
 
     async def delete(self, request, name):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         await log(hass, f"HTTP delete history_stats {name}")
         removed = await package.delete_history_stats(hass, name)
         if not removed:
@@ -493,8 +457,7 @@ class NotifyGroupListView(_AuthedView):
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         return self.json({"items": await package.list_notify_groups(hass)})
 
 
@@ -504,8 +467,7 @@ class NotifyGroupItemView(_AuthedView):
 
     async def get(self, request, name):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         item = await package.get_notify_group(hass, name)
         if item is None:
             return self.json({"error": "not found"}, status_code=404)
@@ -513,8 +475,7 @@ class NotifyGroupItemView(_AuthedView):
 
     async def put(self, request, name):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         data, err = await self._json_body(request)
         if err:
             return err
@@ -535,8 +496,7 @@ class NotifyGroupItemView(_AuthedView):
 
     async def delete(self, request, name):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         await log(hass, f"HTTP delete notify_group {name}")
         removed = await package.delete_notify_group(hass, name)
         if not removed:
@@ -552,8 +512,7 @@ class ReloadView(_AuthedView):
 
     async def post(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         try:
             body = await request.json()
         except Exception:
@@ -576,8 +535,7 @@ class RestartView(_AuthedView):
 
     async def post(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         await log(hass, "HTTP restart requested")
         hass.async_create_task(package.restart(hass))
         return self.json({"status": "scheduled"})
@@ -591,8 +549,7 @@ class LovelaceDashboardsView(_AuthedView):
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         try:
             items = await lovelace_mod.list_dashboards(hass)
         except ValueError as e:
@@ -601,8 +558,7 @@ class LovelaceDashboardsView(_AuthedView):
 
     async def post(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         data, err = await self._json_body(request)
         if err:
             return err
@@ -638,8 +594,7 @@ class LovelaceDashboardItemView(_AuthedView):
 
     async def patch(self, request, url_path):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         data, err = await self._json_body(request)
         if err:
             return err
@@ -656,8 +611,7 @@ class LovelaceDashboardItemView(_AuthedView):
 
     async def delete(self, request, url_path):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         await log(hass, f"HTTP delete dashboard {url_path}")
         try:
             removed = await lovelace_mod.delete_dashboard(hass, url_path)
@@ -674,8 +628,7 @@ class LovelaceConfigView(_AuthedView):
 
     async def get(self, request, url_path):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         try:
             cfg = await lovelace_mod.get_config(hass, url_path)
         except ValueError as e:
@@ -686,8 +639,7 @@ class LovelaceConfigView(_AuthedView):
 
     async def put(self, request, url_path):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         data, err = await self._json_body(request)
         if err:
             return err
@@ -709,8 +661,7 @@ class LovelaceViewView(_AuthedView):
 
     async def post(self, request, url_path):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         data, err = await self._json_body(request)
         if err:
             return err
@@ -732,8 +683,7 @@ class LovelaceViewItemView(_AuthedView):
 
     async def put(self, request, url_path, view_index):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         try:
             idx = int(view_index)
         except ValueError:
@@ -752,8 +702,7 @@ class LovelaceViewItemView(_AuthedView):
 
     async def delete(self, request, url_path, view_index):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         try:
             idx = int(view_index)
         except ValueError:
@@ -772,8 +721,7 @@ class LovelaceCardView(_AuthedView):
 
     async def post(self, request, url_path, view_index):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         try:
             vidx = int(view_index)
         except ValueError:
@@ -797,8 +745,7 @@ class LovelaceCardItemView(_AuthedView):
 
     async def put(self, request, url_path, view_index, card_index):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         try:
             vidx = int(view_index)
             cidx = int(card_index)
@@ -820,8 +767,7 @@ class LovelaceCardItemView(_AuthedView):
 
     async def delete(self, request, url_path, view_index, card_index):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         try:
             vidx = int(view_index)
             cidx = int(card_index)
@@ -850,8 +796,7 @@ class EntityRegistryListView(_AuthedView):
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         items = await registry_mod.list_entities(
             hass,
             domain=request.query.get("domain"),
@@ -870,8 +815,7 @@ class EntityRegistryItemView(_AuthedView):
 
     async def get(self, request, entity_id):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         item = await registry_mod.get_entity(hass, entity_id)
         if item is None:
             return self.json({"error": "not found"}, status_code=404)
@@ -879,8 +823,7 @@ class EntityRegistryItemView(_AuthedView):
 
     async def patch(self, request, entity_id):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         data, err = await self._json_body(request)
         if err:
             return err
@@ -897,8 +840,7 @@ class EntityRegistryItemView(_AuthedView):
 
     async def delete(self, request, entity_id):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         await log(hass, f"HTTP delete entity_registry {entity_id}")
         removed = await registry_mod.delete_entity(hass, entity_id)
         if not removed:
@@ -912,8 +854,7 @@ class DeviceRegistryListView(_AuthedView):
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         items = await registry_mod.list_devices(
             hass,
             area_id=request.query.get("area_id"),
@@ -932,8 +873,7 @@ class DeviceRegistryItemView(_AuthedView):
 
     async def get(self, request, device_id):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         item = await registry_mod.get_device(hass, device_id)
         if item is None:
             return self.json({"error": "not found"}, status_code=404)
@@ -941,8 +881,7 @@ class DeviceRegistryItemView(_AuthedView):
 
     async def patch(self, request, device_id):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         data, err = await self._json_body(request)
         if err:
             return err
@@ -959,8 +898,7 @@ class DeviceRegistryItemView(_AuthedView):
 
     async def delete(self, request, device_id):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         await log(hass, f"HTTP delete device_registry {device_id}")
         removed = await registry_mod.delete_device(hass, device_id)
         if not removed:
@@ -974,8 +912,7 @@ class ConfigEntryListView(_AuthedView):
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         items = await registry_mod.list_config_entries(
             hass, domain=request.query.get("domain")
         )
@@ -988,8 +925,7 @@ class ConfigEntryItemView(_AuthedView):
 
     async def get(self, request, entry_id):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         item = await registry_mod.get_config_entry(hass, entry_id)
         if item is None:
             return self.json({"error": "not found"}, status_code=404)
@@ -997,8 +933,7 @@ class ConfigEntryItemView(_AuthedView):
 
     async def delete(self, request, entry_id):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         await log(hass, f"HTTP delete config_entry {entry_id}")
         try:
             ok = await registry_mod.remove_config_entry(hass, entry_id)
@@ -1015,8 +950,7 @@ class HistoryView(_AuthedView):
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
 
         entity_id_param = request.query.get("entity_id")
         if not entity_id_param:
@@ -1072,8 +1006,7 @@ class ConfigEntryActionView(_AuthedView):
 
     async def post(self, request, entry_id, action):
         hass: HomeAssistant = request.app["hass"]
-        if not self._check(request):
-            return self._unauth()
+        _require_admin(request)
         await log(hass, f"HTTP config_entry action {entry_id} {action}")
         try:
             if action == "disable":

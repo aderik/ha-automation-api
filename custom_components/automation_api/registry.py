@@ -224,6 +224,13 @@ def _config_entry_to_dict(entry) -> dict[str, Any]:
         "title": entry.title,
         "source": entry.source,
         "state": _enum_str(entry.state),
+        # Why setup failed or is retrying; some integrations only set the
+        # translation key, whose placeholders often name the host.
+        "reason": getattr(entry, "reason", None),
+        "reason_translation_key": getattr(entry, "error_reason_translation_key", None),
+        "reason_placeholders": getattr(
+            entry, "error_reason_translation_placeholders", None
+        ),
         "disabled_by": _enum_str(entry.disabled_by),
         "supports_unload": getattr(entry, "supports_unload", False),
         "supports_remove_device": getattr(entry, "supports_remove_device", False),

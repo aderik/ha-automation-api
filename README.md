@@ -146,7 +146,7 @@ Overview dashboard. After every save, Home Assistant fires `lovelace_updated`.
 | `GET` `PATCH` `DELETE` | `/api/automation_api/entity_registry/{entity_id}` | Read, update (`name`, `icon`, `area_id`, `new_entity_id`, `disabled_by`, `hidden_by`) or remove |
 | `GET` | `/api/automation_api/device_registry?area_id=&manufacturer=&model=&integration=&config_entry_id=&disabled=` | List devices |
 | `GET` `PATCH` `DELETE` | `/api/automation_api/device_registry/{device_id}` | Read, update (`name_by_user`, `area_id`, `disabled_by`) or remove with its entities |
-| `GET` | `/api/automation_api/config_entries?domain=` | List integrations |
+| `GET` | `/api/automation_api/config_entries?domain=` | List integrations, with `reason` when setup failed or is retrying |
 | `GET` `DELETE` | `/api/automation_api/config_entries/{entry_id}` | Read, or remove with all its devices and entities |
 | `POST` | `/api/automation_api/config_entries/{entry_id}/reload` | Reload an integration |
 | `POST` | `/api/automation_api/config_entries/{entry_id}/disable` | Disable an integration |

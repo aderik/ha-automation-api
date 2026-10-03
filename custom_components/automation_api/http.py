@@ -19,6 +19,7 @@ from . import package
 from . import lovelace as lovelace_mod
 from . import registry as registry_mod
 from . import history as history_mod
+from . import hacs as hacs_mod
 
 
 CREATE_SCHEMA = vol.Schema(
@@ -1100,6 +1101,59 @@ class ConfigFlowItemView(_AuthedView):
         return self.json({"status": "ok", "flow_id": flow_id})
 
 
+class HacsRepositoriesView(_AuthedView):
+    url = "/api/automation_api/hacs/repositories"
+    name = "api:automation_api:hacs:repositories"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        try:
+            limit = int(request.query.get("limit", 25))
+        except ValueError:
+            return self.json({"error": "limit must be an integer"}, status_code=400)
+        try:
+            items = await hacs_mod.search(
+                hass,
+                query=request.query.get("query"),
+                category=request.query.get("category"),
+                installed=_bool_query(request, "installed"),
+                limit=limit,
+            )
+        except hacs_mod.HacsError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json(
+            {"downloads_allowed": hacs_mod.downloads_allowed(hass), "items": items}
+        )
+
+
+class HacsDownloadView(_AuthedView):
+    url = "/api/automation_api/hacs/download"
+    name = "api:automation_api:hacs:download"
+
+    async def post(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        body, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(body, dict) or not body.get("repository"):
+            return self.json({"error": "missing repository"}, status_code=400)
+        await log(hass, f"HTTP hacs download {body['repository']}")
+        try:
+            result = await hacs_mod.download(
+                hass,
+                body["repository"],
+                category=body.get("category"),
+                version=body.get("version"),
+            )
+        except hacs_mod.HacsError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        except Exception as e:
+            return self.json({"error": f"download failed: {e}"}, status_code=500)
+        return self.json(result)
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
     hass.http.register_view(AutomationApiTriggerView)
@@ -1134,4 +1188,6 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(ConfigEntryActionView)
     hass.http.register_view(ConfigFlowListView)
     hass.http.register_view(ConfigFlowItemView)
+    hass.http.register_view(HacsRepositoriesView)
+    hass.http.register_view(HacsDownloadView)
     hass.http.register_view(HistoryView)

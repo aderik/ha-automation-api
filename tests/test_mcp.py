@@ -87,7 +87,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 62, len(tools)
+    assert len(tools) == 64, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -166,6 +166,63 @@ def main():
         }
     )
     assert done == {"type": "create_entry", "entry_id": "e1", "title": "Met"}, done
+
+    # HACS: downloads are opt-in; unknown repos are added as custom first
+    from custom_components.automation_api import hacs
+
+    sys.modules["custom_components.hacs"] = MagicMock()
+    sys.modules["custom_components.hacs.enums"] = MagicMock()
+
+    def fake_repo(full_name, installed=False):
+        return SimpleNamespace(
+            data=SimpleNamespace(
+                id="1", full_name=full_name, category="integration", domain="x",
+                description="", installed=installed, stargazers_count=1,
+                downloads=0, last_fetched=1,
+            ),
+            display_name=full_name, display_installed_version=None,
+            display_available_version="v1", pending_update=False,
+            ignored_by_country_configuration=False,
+            async_download_repository=AsyncMock(),
+        )
+
+    store = {}
+    hacs_base = MagicMock()
+    hacs_base.system.disabled = False
+    hacs_base.common.categories = {"integration", "plugin"}
+    hacs_base.common.skip = set()
+    hacs_base.repositories.get_by_id.return_value = None
+    hacs_base.repositories.get_by_full_name.side_effect = store.get
+    hacs_base.async_recreate_entities = AsyncMock()
+    hacs_base.data.async_write = AsyncMock()
+
+    async def register(repository_full_name, category):
+        store[repository_full_name] = fake_repo(repository_full_name)
+
+    hacs_base.async_register_repository = AsyncMock(side_effect=register)
+    entry = SimpleNamespace(options={})
+    fake_hass = SimpleNamespace(data={"hacs": hacs_base, "automation_api": {"entry": entry}})
+
+    def run(coro):
+        try:
+            return asyncio.run(coro)
+        except hacs.HacsError as e:
+            return e
+
+    assert "disabled" in str(run(hacs.download(fake_hass, "a/b")))
+    entry.options["allow_hacs"] = True
+    assert "pass `category`" in str(run(hacs.download(fake_hass, "a/b")))
+    assert "invalid category" in str(run(hacs.download(fake_hass, "a/b", category="x")))
+    result = run(hacs.download(fake_hass, "https://github.com/a/b/", category="integration"))
+    assert result["full_name"] == "a/b" and result["restart_required"], result
+    store["a/b"].async_download_repository.assert_awaited_with(ref=None)
+    hacs_base.async_recreate_entities.assert_awaited()
+    hacs_base.async_register_repository.side_effect = None  # validation fails
+    assert "validation failed" in str(run(hacs.download(fake_hass, "c/d", category="plugin")))
+
+    hacs_base.repositories.list_all = [fake_repo("a/b", installed=True), fake_repo("e/f")]
+    assert [r["full_name"] for r in run(hacs.search(fake_hass, query="E/F"))] == ["e/f"]
+    assert len(run(hacs.search(fake_hass, installed=True))) == 1
 
     # bad arguments are a tool error, not a transport error
     is_error, text = call("get_helper", nope=1)

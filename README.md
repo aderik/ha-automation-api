@@ -152,6 +152,21 @@ Removing a registry entity while its integration is still active lets the
 integration re-add it on the next reload; remove the device or the config
 entry instead.
 
+### Adding integrations (config flows)
+
+Adds an integration the way *Add integration* in the UI does, step by step.
+Every response is a flow step: `form` (answer with `{"user_input": {...}}`
+matching `data_schema`), `menu` (`{"user_input": {"next_step_id": ...}}`),
+`create_entry` (done, carries `entry_id`) or `abort` (`reason`). OAuth
+integrations need a browser and can't be finished through the API.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/automation_api/config_flows` | Flows in progress, including discovered integrations |
+| `POST` | `/api/automation_api/config_flows` | Start a flow (`{domain}`) |
+| `POST` | `/api/automation_api/config_flows/{flow_id}` | Submit `{user_input}`; without a body, return the current step |
+| `DELETE` | `/api/automation_api/config_flows/{flow_id}` | Abort a flow |
+
 ### History
 
 `GET /api/automation_api/history?entity_id=sensor.x&hours=24` returns the

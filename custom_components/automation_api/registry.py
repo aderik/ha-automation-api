@@ -217,13 +217,25 @@ async def delete_device(hass: HomeAssistant, device_id: str) -> bool:
 
 # --- Config entries (integrations) --------------------------------------
 
+# Keys local integrations store their device address under (CONF_HOST,
+# CONF_IP_ADDRESS). Only this one value of entry.data is exposed: the rest
+# may hold tokens or passwords.
+_HOST_KEYS = ("host", "ip_address")
+
+
+def _host_key(entry) -> str | None:
+    return next((k for k in _HOST_KEYS if k in entry.data), None)
+
+
 def _config_entry_to_dict(entry) -> dict[str, Any]:
+    host_key = _host_key(entry)
     return {
         "entry_id": entry.entry_id,
         "domain": entry.domain,
         "title": entry.title,
         "source": entry.source,
         "state": _enum_str(entry.state),
+        "host": entry.data[host_key] if host_key else None,
         # Why setup failed or is retrying; some integrations only set the
         # translation key, whose placeholders often name the host.
         "reason": getattr(entry, "reason", None),
@@ -249,6 +261,24 @@ async def list_config_entries(
 async def get_config_entry(hass: HomeAssistant, entry_id: str) -> dict | None:
     entry = hass.config_entries.async_get_entry(entry_id)
     return _config_entry_to_dict(entry) if entry else None
+
+
+async def set_config_entry_host(
+    hass: HomeAssistant, entry_id: str, host: str
+) -> dict | None:
+    """Point an entry at a new address (e.g. after a DHCP change) and reload
+    it, for integrations without a reconfigure flow. Keeps the entry, its
+    devices, entities and history."""
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None:
+        return None
+    if (host_key := _host_key(entry)) is None:
+        raise ValueError(f"{entry.domain} entries store no host or IP address")
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, host_key: host}
+    )
+    await hass.config_entries.async_reload(entry_id)
+    return _config_entry_to_dict(entry)
 
 
 async def disable_config_entry(

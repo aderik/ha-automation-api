@@ -87,7 +87,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 65, len(tools)
+    assert len(tools) == 66, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -247,6 +247,31 @@ def main():
     assert names(sort="last_updated") == ["a/new", "b/old", "c/none"]
     assert names(sort="name") == ["a/new", "b/old", "c/none"]
     assert "invalid sort" in str(run(hacs.search(fake_hass, sort="bogus")))
+
+    # config entry host: only the address is exposed, and only it is changed
+    entry_obj = SimpleNamespace(
+        entry_id="e1", domain="twinkly", title="T", source="user",
+        state="setup_retry", disabled_by=None,
+        data={"host": "10.0.0.1", "token": "secret"},
+    )
+    fake_ce = MagicMock()
+    fake_ce.async_get_entry.return_value = entry_obj
+    fake_ce.async_reload = AsyncMock()
+    def update_entry(entry, data):
+        entry.data = data
+    fake_ce.async_update_entry.side_effect = update_entry
+    ha = SimpleNamespace(config_entries=fake_ce)
+    item = asyncio.run(registry.set_config_entry_host(ha, "e1", "10.0.0.2"))
+    assert item["host"] == "10.0.0.2" and "secret" not in json.dumps(item), item
+    assert entry_obj.data == {"host": "10.0.0.2", "token": "secret"}
+    fake_ce.async_reload.assert_awaited_with("e1")
+    entry_obj.data = {"token": "x"}
+    try:
+        asyncio.run(registry.set_config_entry_host(ha, "e1", "10.0.0.3"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("entry without host was changed")
 
     # bad arguments are a tool error, not a transport error
     is_error, text = call("get_helper", nope=1)

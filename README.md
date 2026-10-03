@@ -147,10 +147,16 @@ Overview dashboard. After every save, Home Assistant fires `lovelace_updated`.
 | `GET` | `/api/automation_api/device_registry?area_id=&manufacturer=&model=&integration=&config_entry_id=&disabled=` | List devices |
 | `GET` `PATCH` `DELETE` | `/api/automation_api/device_registry/{device_id}` | Read, update (`name_by_user`, `area_id`, `disabled_by`) or remove with its entities |
 | `GET` | `/api/automation_api/config_entries?domain=` | List integrations, with `reason` when setup failed or is retrying |
-| `GET` `DELETE` | `/api/automation_api/config_entries/{entry_id}` | Read, or remove with all its devices and entities |
+| `GET` `PATCH` `DELETE` | `/api/automation_api/config_entries/{entry_id}` | Read, change the device address (`{"host": "192.168.1.20"}`, reloads the entry), or remove with all its devices and entities |
 | `POST` | `/api/automation_api/config_entries/{entry_id}/reload` | Reload an integration |
 | `POST` | `/api/automation_api/config_entries/{entry_id}/disable` | Disable an integration |
 | `POST` | `/api/automation_api/config_entries/{entry_id}/enable` | Enable an integration |
+
+Config entries of local integrations show their device address as `host`.
+When a device gets a new DHCP address, `PATCH` the entry with the new one
+instead of removing and re-adding the integration; that keeps its devices,
+entities, areas and history. It works for every integration that stores
+`host` or `ip_address`, including those without a reconfigure flow.
 
 Removing a registry entity while its integration is still active lets the
 integration re-add it on the next reload; remove the device or the config
@@ -273,7 +279,7 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | History | Yes, with change counts | No | Yes, plus statistics, traces and logs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
 | Safeguards | Admin only, HACS opt-in, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 65 | Depends on Assist | 87 |
+| Tools | 66 | Depends on Assist | 87 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,

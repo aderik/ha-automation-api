@@ -933,6 +933,28 @@ class ConfigEntryItemView(_AuthedView):
             return self.json({"error": "not found"}, status_code=404)
         return self.json(item)
 
+    async def patch(self, request, entry_id):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        body, err = await self._json_body(request)
+        if err:
+            return err
+        host = body.get("host") if isinstance(body, dict) else None
+        if not isinstance(host, str) or not host.strip():
+            return self.json({"error": "missing host"}, status_code=400)
+        await log(hass, f"HTTP set config_entry host {entry_id} {host}")
+        try:
+            item = await registry_mod.set_config_entry_host(
+                hass, entry_id, host.strip()
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        except Exception as e:
+            return self.json({"error": f"update failed: {e}"}, status_code=500)
+        if item is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json(item)
+
     async def delete(self, request, entry_id):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)

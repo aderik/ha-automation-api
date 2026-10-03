@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.4.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "1.5.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -840,6 +840,19 @@ async def hacs_download(
         "post",
         body={"repository": repository, "category": category, "version": version},
     )
+
+
+@tool
+async def hacs_remove(c, repository: str) -> Any:
+    """Uninstall a repository downloaded through HACS: `repository` is its
+    `id` or `owner/repo`. Only use it when the user asked to remove that
+    repository; it fails unless 'Allow HACS downloads' is on in the
+    integration options. HACS itself and this integration can't be removed.
+
+    For an integration, first remove its config entries with
+    `remove_config_entry`; they are left alone otherwise. When
+    `restart_required` is true, restart Home Assistant (ask the user first)."""
+    return await c(views.HacsRemoveView, "post", body={"repository": repository})
 
 
 # ---------------------------------------------------------------------------

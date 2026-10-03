@@ -1155,6 +1155,28 @@ class HacsDownloadView(_AuthedView):
         return self.json(result)
 
 
+class HacsRemoveView(_AuthedView):
+    url = "/api/automation_api/hacs/remove"
+    name = "api:automation_api:hacs:remove"
+
+    async def post(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        body, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(body, dict) or not body.get("repository"):
+            return self.json({"error": "missing repository"}, status_code=400)
+        await log(hass, f"HTTP hacs remove {body['repository']}")
+        try:
+            result = await hacs_mod.remove(hass, body["repository"])
+        except hacs_mod.HacsError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        except Exception as e:
+            return self.json({"error": f"remove failed: {e}"}, status_code=500)
+        return self.json(result)
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
     hass.http.register_view(AutomationApiTriggerView)
@@ -1191,4 +1213,5 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(ConfigFlowItemView)
     hass.http.register_view(HacsRepositoriesView)
     hass.http.register_view(HacsDownloadView)
+    hass.http.register_view(HacsRemoveView)
     hass.http.register_view(HistoryView)

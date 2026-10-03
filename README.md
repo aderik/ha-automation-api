@@ -12,8 +12,9 @@ helpers, template entities, Lovelace dashboards, registries and recorder
 history. It is built for machine clients: AI agents, n8n or Make, custom
 dashboards and CI pipelines.
 
-A companion MCP server, [ha-automation-mcp](https://github.com/aderik/ha-automation-mcp),
-exposes every endpoint below as a tool for MCP-capable agents.
+The integration also serves a built-in [MCP server](#mcp-server) that exposes
+every endpoint below as a tool for MCP-capable agents, with no separate
+process to run.
 
 ## Features
 
@@ -25,6 +26,7 @@ exposes every endpoint below as a tool for MCP-capable agents.
 - Entity, device and config-entry registries, including reload, enable,
   disable and remove
 - Recorder history with per-entity change counts
+- Built-in MCP server (Streamable HTTP) with a tool for every endpoint
 - Authenticated with Home Assistant's own long-lived access tokens
 - Installable through HACS
 
@@ -179,6 +181,27 @@ at a glance:
 
 Commands `automation_api/create`, `automation_api/delete` and
 `automation_api/test`, with the same payloads as the REST endpoints.
+
+## MCP server
+
+The integration serves an MCP server over Streamable HTTP at
+`/api/automation_api/mcp`. It offers one tool per REST endpoint, plus
+`get_state` and `call_service`, and uses the same administrator bearer token.
+
+Claude Code:
+
+```
+claude mcp add --transport http ha-automation \
+  http://<home-assistant>:8123/api/automation_api/mcp \
+  --header "Authorization: Bearer <long-lived access token>"
+```
+
+Any other client that supports Streamable HTTP with a custom header works the
+same way. The server is stateless and answers with plain JSON; it does not
+open an SSE stream.
+
+This replaces the standalone
+[ha-automation-mcp](https://github.com/aderik/ha-automation-mcp) server.
 
 ## Notes
 

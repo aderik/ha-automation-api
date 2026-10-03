@@ -185,7 +185,9 @@ class AutomationApiEntitiesView(HomeAssistantView):
 
             effective_area_id = e.area_id
             if not effective_area_id and e.device_id:
-                dev = dr.devices.get(e.device_id)
+                # dr.devices.get() calls report_usage per lookup on HA 2026.x,
+                # which made this loop take seconds.
+                dev = dr.async_get(e.device_id)
                 if dev:
                     effective_area_id = dev.area_id
 

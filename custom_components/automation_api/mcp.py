@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.5.1"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "1.6.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -690,7 +690,8 @@ async def delete_device(c, device_id: str) -> Any:
 async def list_config_entries(c, domain: str | None = None) -> Any:
     """List installed integrations (config entries).
 
-    Each item has `entry_id`, `domain`, `title`, `state`, `disabled_by`,
+    Each item has `entry_id`, `domain`, `title`, `state`, `host` (the
+    device address, for local integrations), `disabled_by`,
     `supports_unload`, `supports_remove_device`. For `setup_error` or
     `setup_retry`, `reason` (or `reason_translation_key` with
     `reason_placeholders`) says why. Filter by `domain`
@@ -703,6 +704,20 @@ async def list_config_entries(c, domain: str | None = None) -> Any:
 async def get_config_entry(c, entry_id: str) -> Any:
     """Get full details for a single config entry."""
     return await c(views.ConfigEntryItemView, "get", entry_id=entry_id)
+
+
+@tool
+async def set_config_entry_host(c, entry_id: str, host: str) -> Any:
+    """Point a local integration at a new IP address or hostname and reload
+    it, e.g. after the router handed the device a new DHCP address. Keeps
+    the entry, its devices, entities and history. Works for any integration
+    that stores `host` or `ip_address`, also those without a reconfigure
+    flow. Prefer the integration's own flow when it updates the address
+    (WiZ: `start_config_flow` with the new host). Check the device really is
+    at `host` first; the returned `state` shows whether setup succeeded."""
+    return await c(
+        views.ConfigEntryItemView, "patch", entry_id=entry_id, body={"host": host}
+    )
 
 
 @tool

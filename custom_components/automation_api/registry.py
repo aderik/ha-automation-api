@@ -267,3 +267,68 @@ async def remove_config_entry(hass: HomeAssistant, entry_id: str) -> bool:
         return False
     result = await hass.config_entries.async_remove(entry_id)
     return bool(result)
+
+
+# --- Config flows (adding integrations) ----------------------------------
+
+def _flow_result_to_dict(result) -> dict[str, Any]:
+    """JSON-safe flow result, as HA's own config flow view serialises it."""
+    from homeassistant.helpers import config_validation as cv
+
+    try:  # HA 2026.9+
+        from probatio import to_field_list
+    except ImportError:
+        from voluptuous_serialize import convert as to_field_list
+
+    data = dict(result)
+    if _enum_str(data.get("type")) == "create_entry":
+        entry = data.pop("result", None)
+        data["entry_id"] = getattr(entry, "entry_id", None)
+        data.pop("data", None)
+        data.pop("options", None)
+    if "data_schema" in data:
+        schema = data["data_schema"]
+        data["data_schema"] = (
+            []
+            if schema is None
+            else to_field_list(schema, custom_serializer=cv.custom_serializer)
+        )
+    data.pop("context", None)
+    data["type"] = _enum_str(data.get("type"))
+    return data
+
+
+async def list_config_flows(hass: HomeAssistant) -> list[dict]:
+    """Flows in progress: discovered integrations waiting to be set up, plus
+    unfinished user flows."""
+    return [
+        {
+            "flow_id": f["flow_id"],
+            "handler": f["handler"],
+            "step_id": f.get("step_id"),
+            "source": f.get("context", {}).get("source"),
+            "unique_id": f.get("context", {}).get("unique_id"),
+            "title_placeholders": f.get("context", {}).get("title_placeholders"),
+        }
+        for f in hass.config_entries.flow.async_progress()
+    ]
+
+
+async def start_config_flow(hass: HomeAssistant, domain: str) -> dict:
+    from homeassistant.config_entries import SOURCE_USER
+
+    result = await hass.config_entries.flow.async_init(
+        domain, context={"source": SOURCE_USER, "show_advanced_options": True}
+    )
+    return _flow_result_to_dict(result)
+
+
+async def continue_config_flow(
+    hass: HomeAssistant, flow_id: str, user_input: dict | None = None
+) -> dict:
+    result = await hass.config_entries.flow.async_configure(flow_id, user_input)
+    return _flow_result_to_dict(result)
+
+
+async def abort_config_flow(hass: HomeAssistant, flow_id: str) -> None:
+    hass.config_entries.flow.async_abort(flow_id)

@@ -16,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-STUBBED = ("homeassistant", "aiohttp", "voluptuous")
+STUBBED = ("homeassistant", "aiohttp", "voluptuous", "probatio")
 
 
 class _StubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
@@ -87,7 +87,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 58, len(tools)
+    assert len(tools) == 62, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -132,6 +132,40 @@ def main():
     assert kwargs["platform"] == "tuya"
     assert kwargs["disabled"] is False
     assert kwargs["domain"] is None
+
+    # config flows: body reaches the view, missing domain is rejected
+    mcp.views.registry_mod.start_config_flow = AsyncMock(
+        return_value={"type": "form", "flow_id": "f1"}
+    )
+    assert call("start_config_flow", domain="met") == (
+        False,
+        json.dumps({"type": "form", "flow_id": "f1"}),
+    )
+    assert mcp.views.registry_mod.start_config_flow.await_args.args[1] == "met"
+    is_error, text = call("start_config_flow", domain="")
+    assert is_error and "missing domain" in text
+
+    # flow results are made JSON-safe: schema serialised, entry -> entry_id
+    from custom_components.automation_api import registry
+    import probatio
+
+    probatio.to_field_list = MagicMock(return_value=[{"name": "host"}])
+    form = registry._flow_result_to_dict(
+        {"type": "form", "data_schema": object(), "context": {"source": "user"}}
+    )
+    assert form == {"type": "form", "data_schema": [{"name": "host"}]}, form
+    assert registry._flow_result_to_dict({"type": "menu", "data_schema": None})[
+        "data_schema"
+    ] == []
+    done = registry._flow_result_to_dict(
+        {
+            "type": "create_entry",
+            "result": SimpleNamespace(entry_id="e1"),
+            "data": {"password": "x"},
+            "title": "Met",
+        }
+    )
+    assert done == {"type": "create_entry", "entry_id": "e1", "title": "Met"}, done
 
     # bad arguments are a tool error, not a transport error
     is_error, text = call("get_helper", nope=1)

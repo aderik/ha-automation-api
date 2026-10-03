@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from aiohttp import web
+from homeassistant import data_entry_flow
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import Unauthorized
@@ -1030,6 +1031,73 @@ class ConfigEntryActionView(_AuthedView):
         return self.json({"status": "ok", "entry_id": entry_id, "action": action})
 
 
+async def _run_flow(view, coro):
+    """Await a flow step and map flow errors to HTTP status codes."""
+    try:
+        return view.json(await coro)
+    except (data_entry_flow.UnknownHandler, data_entry_flow.UnknownFlow) as e:
+        return view.json({"error": f"not found: {e}"}, status_code=404)
+    except data_entry_flow.InvalidData as e:
+        return view.json(
+            {"error": "invalid user_input", "errors": e.schema_errors},
+            status_code=400,
+        )
+    except data_entry_flow.UnknownStep as e:
+        return view.json({"error": f"invalid user_input: {e}"}, status_code=400)
+    except Exception as e:
+        return view.json({"error": f"flow failed: {e}"}, status_code=500)
+
+
+class ConfigFlowListView(_AuthedView):
+    url = "/api/automation_api/config_flows"
+    name = "api:automation_api:config_flows:list"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        return self.json({"items": await registry_mod.list_config_flows(hass)})
+
+    async def post(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        body, err = await self._json_body(request)
+        if err:
+            return err
+        domain = body.get("domain") if isinstance(body, dict) else None
+        if not domain:
+            return self.json({"error": "missing domain"}, status_code=400)
+        await log(hass, f"HTTP start config_flow {domain}")
+        return await _run_flow(self, registry_mod.start_config_flow(hass, domain))
+
+
+class ConfigFlowItemView(_AuthedView):
+    url = "/api/automation_api/config_flows/{flow_id}"
+    name = "api:automation_api:config_flows:item"
+
+    async def post(self, request, flow_id):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        try:
+            body = await request.json()
+        except Exception:  # no body: re-show the current step
+            body = None
+        user_input = body.get("user_input") if isinstance(body, dict) else None
+        await log(hass, f"HTTP continue config_flow {flow_id}")
+        return await _run_flow(
+            self, registry_mod.continue_config_flow(hass, flow_id, user_input)
+        )
+
+    async def delete(self, request, flow_id):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        await log(hass, f"HTTP abort config_flow {flow_id}")
+        try:
+            await registry_mod.abort_config_flow(hass, flow_id)
+        except data_entry_flow.UnknownFlow:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"status": "ok", "flow_id": flow_id})
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
     hass.http.register_view(AutomationApiTriggerView)
@@ -1062,4 +1130,6 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(ConfigEntryListView)
     hass.http.register_view(ConfigEntryItemView)
     hass.http.register_view(ConfigEntryActionView)
+    hass.http.register_view(ConfigFlowListView)
+    hass.http.register_view(ConfigFlowItemView)
     hass.http.register_view(HistoryView)

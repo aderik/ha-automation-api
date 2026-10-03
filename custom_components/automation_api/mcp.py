@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.1.1"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "1.2.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -734,6 +734,53 @@ async def remove_config_entry(c, entry_id: str) -> Any:
     entities are removed from the registries. Irreversible — to restore,
     re-add the integration via Settings → Devices & services."""
     return await c(views.ConfigEntryItemView, "delete", entry_id=entry_id)
+
+
+@tool
+async def list_config_flows(c) -> Any:
+    """List config flows in progress: integrations Home Assistant discovered
+    (zeroconf, DHCP, bluetooth, ...) that wait to be set up, plus unfinished
+    flows. Finish one with `continue_config_flow`, using its `flow_id`."""
+    return await c(views.ConfigFlowListView, "get")
+
+
+@tool
+async def start_config_flow(c, domain: str) -> Any:
+    """Add an integration by starting its config flow, as 'Add integration'
+    in the UI does. `domain` is the integration name, e.g. 'wiz', 'met'.
+
+    Returns the first step. `type` is one of:
+    - `form`: answer with `continue_config_flow` and a `user_input` matching
+      `data_schema` (`errors` holds validation messages from the last try)
+    - `menu`: answer with `user_input={"next_step_id": <one of menu_options>}`
+    - `create_entry`: done; `entry_id` is the new config entry
+    - `abort`: stopped, `reason` says why (e.g. 'already_configured')
+    - `external` / `progress`: needs a browser (OAuth) or is still working;
+      OAuth integrations can't be finished through this API.
+    """
+    return await c(views.ConfigFlowListView, "post", body={"domain": domain})
+
+
+@tool
+async def continue_config_flow(
+    c, flow_id: str, user_input: dict[str, Any] | None = None
+) -> Any:
+    """Submit `user_input` for the current step of a config flow and return
+    the next step (same result shape as `start_config_flow`). Without
+    `user_input`, returns the current step, e.g. to see the form of a
+    discovered flow from `list_config_flows`."""
+    return await c(
+        views.ConfigFlowItemView,
+        "post",
+        flow_id=flow_id,
+        body={"user_input": user_input},
+    )
+
+
+@tool
+async def abort_config_flow(c, flow_id: str) -> Any:
+    """Abort a config flow in progress."""
+    return await c(views.ConfigFlowItemView, "delete", flow_id=flow_id)
 
 
 # ---------------------------------------------------------------------------

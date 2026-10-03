@@ -8,6 +8,7 @@ from homeassistant.helpers import config_validation as cv
 from .const import DOMAIN
 from .http import async_register_http
 from .ws import async_register_ws
+from .mcp import async_register_mcp
 from .storage import create_or_update, delete as delete_automation, reload_automations
 from .utils import log, normalize_payload
 
@@ -16,6 +17,7 @@ async def async_setup(hass: HomeAssistant, config: dict):
     hass.data.setdefault(DOMAIN, {})
     async_register_http(hass)
     async_register_ws(hass)
+    async_register_mcp(hass)
 
     create_schema = vol.Schema(
         {

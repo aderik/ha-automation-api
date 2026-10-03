@@ -25,6 +25,10 @@ _SORTS = {
 }
 
 
+# Removing these through the API would cut off HACS or this API itself.
+_PROTECTED = {"hacs/integration", "aderik/ha-automation-api"}
+
+
 class HacsError(Exception):
     """A request HACS can't fulfil; reported to the caller as a 400."""
 
@@ -41,6 +45,26 @@ def _hacs(hass: HomeAssistant):
     if hacs.system.disabled:
         raise HacsError(f"HACS is disabled: {hacs.system.disabled_reason}")
     return hacs
+
+
+def _hacs_for_changes(hass: HomeAssistant):
+    """HACS, provided the user opted in to changes through this API."""
+    if not downloads_allowed(hass):
+        raise HacsError(
+            "HACS downloads are disabled; enable 'Allow HACS downloads' in the "
+            "Automation API integration options"
+        )
+    return _hacs(hass)
+
+
+def _normalize(repository: str) -> str:
+    return repository.removeprefix("https://github.com/").strip("/")
+
+
+def _find(hacs, repository: str):
+    return hacs.repositories.get_by_id(
+        repository
+    ) or hacs.repositories.get_by_full_name(repository)
 
 
 def _repo_to_dict(repo) -> dict[str, Any]:
@@ -113,16 +137,9 @@ async def download(
     """
     from custom_components.hacs.enums import HacsDispatchEvent
 
-    if not downloads_allowed(hass):
-        raise HacsError(
-            "HACS downloads are disabled; enable 'Allow HACS downloads' in the "
-            "Automation API integration options"
-        )
-    hacs = _hacs(hass)
-    repository = repository.removeprefix("https://github.com/").strip("/")
-    repo = hacs.repositories.get_by_id(
-        repository
-    ) or hacs.repositories.get_by_full_name(repository)
+    hacs = _hacs_for_changes(hass)
+    repository = _normalize(repository)
+    repo = _find(hacs, repository)
 
     if repo is None:
         if not category:
@@ -152,6 +169,32 @@ async def download(
     if not was_installed:
         hacs.async_dispatch(HacsDispatchEvent.RELOAD, {"force": True})
         await hacs.async_recreate_entities()
+    await hacs.data.async_write()
+
+    result = _repo_to_dict(repo)
+    result["restart_required"] = repo.data.category == "integration"
+    return result
+
+
+async def remove(hass: HomeAssistant, repository: str) -> dict:
+    """Uninstall a downloaded repository by id or `owner/name`, as HACS's
+    own "Remove" does. Config entries of an integration are left alone."""
+    hacs = _hacs_for_changes(hass)
+    repository = _normalize(repository)
+    repo = _find(hacs, repository)
+    if repo is None or not repo.data.installed:
+        raise HacsError(f"{repository} is not installed through HACS")
+    if repo.data.full_name in _PROTECTED:
+        raise HacsError(
+            f"refusing to remove {repo.data.full_name}; remove it in the HACS UI"
+        )
+
+    repo.data.new = False
+    try:
+        await repo.update_repository(ignore_issues=True, force=True)
+    except Exception:  # noqa: BLE001 - HACS's own remove ignores this too
+        pass
+    await repo.uninstall()
     await hacs.data.async_write()
 
     result = _repo_to_dict(repo)

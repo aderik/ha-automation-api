@@ -87,7 +87,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 64, len(tools)
+    assert len(tools) == 65, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -219,6 +219,20 @@ def main():
     hacs_base.async_recreate_entities.assert_awaited()
     hacs_base.async_register_repository.side_effect = None  # validation fails
     assert "validation failed" in str(run(hacs.download(fake_hass, "c/d", category="plugin")))
+
+    # remove: only installed repos, never HACS itself; gated like downloads
+    store["a/b"].data.installed = True
+    store["a/b"].update_repository = AsyncMock(side_effect=RuntimeError("offline"))
+    store["a/b"].uninstall = AsyncMock()
+    result = run(hacs.remove(fake_hass, "a/b"))
+    assert result["restart_required"], result
+    store["a/b"].uninstall.assert_awaited_once()
+    assert "not installed" in str(run(hacs.remove(fake_hass, "x/y")))
+    store["hacs/integration"] = fake_repo("hacs/integration", installed=True)
+    assert "refusing" in str(run(hacs.remove(fake_hass, "hacs/integration")))
+    entry.options["allow_hacs"] = False
+    assert "disabled" in str(run(hacs.remove(fake_hass, "a/b")))
+    entry.options["allow_hacs"] = True
 
     hacs_base.repositories.list_all = [fake_repo("a/b", installed=True), fake_repo("e/f")]
     assert [r["full_name"] for r in run(hacs.search(fake_hass, query="E/F"))] == ["e/f"]

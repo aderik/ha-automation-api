@@ -26,7 +26,7 @@ process to run.
 - Entity, device and config-entry registries, including reload, enable,
   disable and remove
 - Adding integrations through their config flows, including discovered ones
-- Searching the HACS store and installing repositories (opt-in)
+- Searching the HACS store, installing and removing repositories (opt-in)
 - Recorder history with per-entity change counts
 - Built-in MCP server (Streamable HTTP) with a tool for every endpoint
 - Authenticated with Home Assistant's own long-lived access tokens
@@ -173,12 +173,12 @@ integrations need a browser and can't be finished through the API.
 
 ### HACS
 
-Search the HACS store and install or update repositories. HACS has no public
+Search the HACS store and install, update or remove repositories. HACS has no public
 API, so this mirrors its own websocket commands (tested against HACS 2.0.5)
 and may break when HACS changes.
 
 Downloading installs third-party code that runs with full Home Assistant
-rights, so it is **off by default**: enable *Allow HACS downloads* under
+rights, so downloads and removals are **off by default**: enable *Allow HACS downloads* under
 Settings → Devices & services → Automation API → Configure. Searching works
 either way.
 
@@ -186,11 +186,13 @@ either way.
 |---|---|---|
 | `GET` | `/api/automation_api/hacs/repositories?query=&category=&installed=&sort=&limit=` | Search the store; `sort` is `stars` (default), `last_updated` or `name`; 25 results by default |
 | `POST` | `/api/automation_api/hacs/download` | Install or update (`{repository, category?, version?}`) |
+| `POST` | `/api/automation_api/hacs/remove` | Uninstall (`{repository}`); HACS itself and this integration are refused |
 
 `repository` is a HACS id or `owner/repo`. A repository that isn't in the
 store is added as a custom repository first, which needs `category`
 (`integration`, `plugin`, `theme`, ...). A downloaded integration needs a
-restart (`restart_required: true`); then add it with a config flow.
+restart (`restart_required: true`); then add it with a config flow. Before
+removing an integration, remove its config entries; HACS leaves them behind.
 
 ### History
 
@@ -267,11 +269,11 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Dashboards | Dashboards, views and single cards | No | Yes |
 | Entity and device registry | Yes | No | Yes |
 | Add integrations (config flows) | Yes | No | Yes |
-| HACS | Search and install, off by default | No | Yes |
+| HACS | Search, install and remove; changes off by default | No | Yes |
 | History | Yes, with change counts | No | Yes, plus statistics, traces and logs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
 | Safeguards | Admin only, HACS opt-in, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 64 | Depends on Assist | 87 |
+| Tools | 65 | Depends on Assist | 87 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,

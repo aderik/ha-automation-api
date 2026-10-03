@@ -1036,7 +1036,9 @@ async def _run_flow(view, coro):
     try:
         return view.json(await coro)
     except (data_entry_flow.UnknownHandler, data_entry_flow.UnknownFlow) as e:
-        return view.json({"error": f"not found: {e}"}, status_code=404)
+        return view.json(
+            {"error": f"not found: {e or type(e).__name__}"}, status_code=404
+        )
     except data_entry_flow.InvalidData as e:
         return view.json(
             {"error": "invalid user_input", "errors": e.schema_errors},

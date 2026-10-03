@@ -1,7 +1,7 @@
 """History endpoint backed by HA's recorder.
 
 Wraps `homeassistant.components.recorder.history` so external clients can
-query state-change history for any entity via API-key auth.
+query state-change history for any entity with an administrator token.
 """
 
 from __future__ import annotations

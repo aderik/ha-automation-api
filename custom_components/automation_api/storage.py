@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry
 from homeassistant.util.file import write_utf8_file_atomic
 from homeassistant.util.yaml import load_yaml, dump
 
@@ -69,6 +70,13 @@ async def delete(hass: HomeAssistant, automation_id: str) -> None:
         _write_yaml(path, items)
 
     await hass.async_add_executor_job(_update)
+
+    # Drop the registry entry too, as HA's own automation editor does;
+    # otherwise the entity lingers as "unavailable" (restored).
+    ent_reg = entity_registry.async_get(hass)
+    entity_id = ent_reg.async_get_entity_id("automation", "automation", automation_id)
+    if entity_id:
+        ent_reg.async_remove(entity_id)
 
 
 async def reload_automations(hass: HomeAssistant, automation_id: str | None = None) -> None:

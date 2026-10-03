@@ -167,6 +167,27 @@ integrations need a browser and can't be finished through the API.
 | `POST` | `/api/automation_api/config_flows/{flow_id}` | Submit `{user_input}`; without a body, return the current step |
 | `DELETE` | `/api/automation_api/config_flows/{flow_id}` | Abort a flow |
 
+### HACS
+
+Search the HACS store and install or update repositories. HACS has no public
+API, so this mirrors its own websocket commands (tested against HACS 2.0.5)
+and may break when HACS changes.
+
+Downloading installs third-party code that runs with full Home Assistant
+rights, so it is **off by default**: enable *Allow HACS downloads* under
+Settings → Devices & services → Automation API → Configure. Searching works
+either way.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/automation_api/hacs/repositories?query=&category=&installed=&limit=` | Search the store (default 25 results, by stars) |
+| `POST` | `/api/automation_api/hacs/download` | Install or update (`{repository, category?, version?}`) |
+
+`repository` is a HACS id or `owner/repo`. A repository that isn't in the
+store is added as a custom repository first, which needs `category`
+(`integration`, `plugin`, `theme`, ...). A downloaded integration needs a
+restart (`restart_required: true`); then add it with a config flow.
+
 ### History
 
 `GET /api/automation_api/history?entity_id=sensor.x&hours=24` returns the

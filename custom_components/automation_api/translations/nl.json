@@ -1,0 +1,15 @@
+{
+  "options": {
+    "step": {
+      "init": {
+        "title": "Automation API-opties",
+        "data": {
+          "allow_hacs": "HACS-downloads toestaan"
+        },
+        "data_description": {
+          "allow_hacs": "Laat API- en MCP-clients HACS-repositories installeren en bijwerken. Die draaien code van derden met volledige Home Assistant-rechten."
+        }
+      }
+    }
+  }
+}

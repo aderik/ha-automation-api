@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.2.2"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "1.3.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -781,6 +781,62 @@ async def continue_config_flow(
 async def abort_config_flow(c, flow_id: str) -> Any:
     """Abort a config flow in progress."""
     return await c(views.ConfigFlowItemView, "delete", flow_id=flow_id)
+
+
+# ---------------------------------------------------------------------------
+# HACS
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def hacs_search(
+    c,
+    query: str | None = None,
+    category: str | None = None,
+    installed: bool | None = None,
+    limit: int | None = None,
+) -> Any:
+    """Search the HACS store. `query` matches name, `owner/repo`,
+    description and domain; `category` is e.g. 'integration', 'plugin'
+    (dashboard cards), 'theme'; `installed` filters on installed state.
+    Sorted by stars, at most `limit` (default 25) results. Each item has
+    `id`, `full_name`, `category`, `domain`, `installed_version`,
+    `available_version` and `pending_upgrade`. `downloads_allowed` says
+    whether `hacs_download` is enabled."""
+    return await c(
+        views.HacsRepositoriesView,
+        "get",
+        query={
+            "query": query,
+            "category": category,
+            "installed": installed,
+            "limit": limit,
+        },
+    )
+
+
+@tool
+async def hacs_download(
+    c,
+    repository: str,
+    category: str | None = None,
+    version: str | None = None,
+) -> Any:
+    """Install or update a HACS repository: `repository` is its `id` or
+    `owner/repo`. A repository not in the HACS store is added as a custom
+    repository first, which needs `category`. `version` picks a release tag
+    (default: latest).
+
+    This installs third-party code with full Home Assistant rights. Only use
+    it when the user asked for that repository; it fails unless 'Allow HACS
+    downloads' is on in the integration options. When `restart_required`
+    is true, restart Home Assistant (ask the user first), then add the
+    integration with `start_config_flow` using its `domain`."""
+    return await c(
+        views.HacsDownloadView,
+        "post",
+        body={"repository": repository, "category": category, "version": version},
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,15 @@
+{
+  "options": {
+    "step": {
+      "init": {
+        "title": "Automation API options",
+        "data": {
+          "allow_hacs": "Allow HACS downloads"
+        },
+        "data_description": {
+          "allow_hacs": "Lets API and MCP clients install and update HACS repositories. These run third-party code with full Home Assistant rights."
+        }
+      }
+    }
+  }
+}

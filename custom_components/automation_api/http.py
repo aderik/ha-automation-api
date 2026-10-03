@@ -1118,6 +1118,7 @@ class HacsRepositoriesView(_AuthedView):
                 query=request.query.get("query"),
                 category=request.query.get("category"),
                 installed=_bool_query(request, "installed"),
+                sort=request.query.get("sort"),
                 limit=limit,
             )
         except hacs_mod.HacsError as e:

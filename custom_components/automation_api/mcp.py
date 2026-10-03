@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.3.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "1.4.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -794,14 +794,16 @@ async def hacs_search(
     query: str | None = None,
     category: str | None = None,
     installed: bool | None = None,
+    sort: str | None = None,
     limit: int | None = None,
 ) -> Any:
     """Search the HACS store. `query` matches name, `owner/repo`,
     description and domain; `category` is e.g. 'integration', 'plugin'
     (dashboard cards), 'theme'; `installed` filters on installed state.
-    Sorted by stars, at most `limit` (default 25) results. Each item has
+    `sort` is 'stars' (default, most first), 'last_updated' (most recent
+    first) or 'name'. At most `limit` (default 25) results. Each item has
     `id`, `full_name`, `category`, `domain`, `installed_version`,
-    `available_version` and `pending_upgrade`. `downloads_allowed` says
+    `available_version`, `pending_upgrade` and `last_updated`. `downloads_allowed` says
     whether `hacs_download` is enabled."""
     return await c(
         views.HacsRepositoriesView,
@@ -810,6 +812,7 @@ async def hacs_search(
             "query": query,
             "category": category,
             "installed": installed,
+            "sort": sort,
             "limit": limit,
         },
     )

@@ -173,12 +173,12 @@ def main():
     sys.modules["custom_components.hacs"] = MagicMock()
     sys.modules["custom_components.hacs.enums"] = MagicMock()
 
-    def fake_repo(full_name, installed=False):
+    def fake_repo(full_name, installed=False, stars=1, last_updated=None):
         return SimpleNamespace(
             data=SimpleNamespace(
                 id="1", full_name=full_name, category="integration", domain="x",
-                description="", installed=installed, stargazers_count=1,
-                downloads=0, last_fetched=1,
+                description="", installed=installed, stargazers_count=stars,
+                downloads=0, last_fetched=1, last_updated=last_updated,
             ),
             display_name=full_name, display_installed_version=None,
             display_available_version="v1", pending_update=False,
@@ -223,6 +223,16 @@ def main():
     hacs_base.repositories.list_all = [fake_repo("a/b", installed=True), fake_repo("e/f")]
     assert [r["full_name"] for r in run(hacs.search(fake_hass, query="E/F"))] == ["e/f"]
     assert len(run(hacs.search(fake_hass, installed=True))) == 1
+    hacs_base.repositories.list_all = [
+        fake_repo("b/old", stars=9, last_updated="2025-01-01T00:00:00Z"),
+        fake_repo("a/new", stars=1, last_updated="2026-09-01T00:00:00Z"),
+        fake_repo("c/none", stars=5),
+    ]
+    names = lambda **kw: [r["full_name"] for r in run(hacs.search(fake_hass, **kw))]
+    assert names() == ["b/old", "c/none", "a/new"]
+    assert names(sort="last_updated") == ["a/new", "b/old", "c/none"]
+    assert names(sort="name") == ["a/new", "b/old", "c/none"]
+    assert "invalid sort" in str(run(hacs.search(fake_hass, sort="bogus")))
 
     # bad arguments are a tool error, not a transport error
     is_error, text = call("get_helper", nope=1)

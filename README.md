@@ -180,7 +180,7 @@ either way.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/automation_api/hacs/repositories?query=&category=&installed=&limit=` | Search the store (default 25 results, by stars) |
+| `GET` | `/api/automation_api/hacs/repositories?query=&category=&installed=&sort=&limit=` | Search the store; `sort` is `stars` (default), `last_updated` or `name`; 25 results by default |
 | `POST` | `/api/automation_api/hacs/download` | Install or update (`{repository, category?, version?}`) |
 
 `repository` is a HACS id or `owner/repo`. A repository that isn't in the

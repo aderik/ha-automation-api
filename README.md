@@ -8,8 +8,8 @@
 
 A Home Assistant custom integration that exposes a REST and WebSocket API for
 managing configuration that the built-in API leaves out: automations,
-helpers, template entities, Lovelace dashboards, registries and recorder
-history. It is built for machine clients: AI agents, n8n or Make, custom
+helpers, template entities, Lovelace dashboards, registries, integrations,
+HACS and recorder history. It is built for machine clients: AI agents, n8n or Make, custom
 dashboards and CI pipelines.
 
 The integration also serves a built-in [MCP server](#mcp-server) that exposes
@@ -25,6 +25,8 @@ process to run.
 - Storage-mode Lovelace dashboards: dashboards, views and cards
 - Entity, device and config-entry registries, including reload, enable,
   disable and remove
+- Adding integrations through their config flows, including discovered ones
+- Searching the HACS store and installing repositories (opt-in)
 - Recorder history with per-entity change counts
 - Built-in MCP server (Streamable HTTP) with a tool for every endpoint
 - Authenticated with Home Assistant's own long-lived access tokens
@@ -35,7 +37,9 @@ process to run.
 1. In HACS, add this repository as a custom repository of type *Integration*.
 2. Install it and restart Home Assistant.
 3. Go to *Settings → Devices & services → Add integration* and choose
-   **Automation API**. There is nothing to configure.
+   **Automation API**. There is nothing to configure. The only option,
+   *Allow HACS downloads* under *Configure*, is off by default (see
+   [HACS](#hacs)).
 4. Create a long-lived access token for an **administrator** account
    (profile → *Security*).
 
@@ -213,10 +217,13 @@ at a glance:
 }
 ```
 
-## WebSocket API
+## WebSocket API and services
 
 Commands `automation_api/create`, `automation_api/delete` and
-`automation_api/test`, with the same payloads as the REST endpoints.
+`automation_api/test`, with the same payloads as the REST endpoints. The same
+three actions exist as services (`automation_api.create_automation`,
+`automation_api.delete_automation`, `automation_api.test_automation`) for use
+in scripts and automations.
 
 ## MCP server
 
@@ -238,6 +245,37 @@ open an SSE stream.
 
 This replaces the standalone
 [ha-automation-mcp](https://github.com/aderik/ha-automation-mcp) server.
+
+### Compared to other MCP servers
+
+Home Assistant ships its own
+[MCP Server integration](https://www.home-assistant.io/integrations/mcp_server/),
+and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp).
+
+| | Automation API | Built-in MCP Server | ha-mcp |
+|---|---|---|---|
+| Purpose | Configure HA from agents and scripts | Voice-style control through Assist | Configure, build and debug HA |
+| Runs | Inside HA (custom integration) | Inside HA (core integration) | Inside HA (custom component), or as add-on, Docker or `uvx` |
+| Authentication | Admin long-lived token | OAuth or token | None in-process; token otherwise |
+| Entity scope | Everything | Only entities exposed to Assist | Everything |
+| Control devices | `call_service` | Assist intents | Yes |
+| REST API besides MCP | Yes | No | No |
+| Automations | Create, edit, delete, trigger | No | Yes |
+| Scripts and scenes | No | No | Yes |
+| Helpers | `input_*` in a package file | No | Yes, as UI helpers |
+| Template entities, `history_stats`, notify groups | Yes, in a package file | No | Template helpers |
+| Dashboards | Dashboards, views and single cards | No | Yes |
+| Entity and device registry | Yes | No | Yes |
+| Add integrations (config flows) | Yes | No | Yes |
+| HACS | Search and install, off by default | No | Yes |
+| History | Yes, with change counts | No | Yes, plus statistics, traces and logs |
+| Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
+| Safeguards | Admin only, HACS opt-in, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
+| Tools | 64 | Depends on Assist | 87 |
+
+Use the built-in server to control exposed devices, ha-mcp for the broadest
+toolset, and Automation API when you also want a plain REST API (n8n, Make,
+CI) or YAML-managed helpers and template entities next to MCP.
 
 ## Notes
 

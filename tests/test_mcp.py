@@ -273,6 +273,10 @@ def main():
     else:
         raise AssertionError("entry without host was changed")
 
+    # device iteration: old mapping registry and the 2026.x entry view
+    assert list(registry._iter_devices(SimpleNamespace(devices={"d1": "dev1"}))) == ["dev1"]
+    assert list(registry._iter_devices(SimpleNamespace(devices=("dev1",)))) == ["dev1"]
+
     # bad arguments are a tool error, not a transport error
     is_error, text = call("get_helper", nope=1)
     assert is_error and "TypeError" in text

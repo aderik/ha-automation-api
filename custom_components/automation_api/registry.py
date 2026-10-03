@@ -8,6 +8,7 @@ restart (e.g. Tuya re-discovering devices already managed by ZHA).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -147,6 +148,14 @@ def _device_registry(hass: HomeAssistant):
     return dr.async_get(hass)
 
 
+def _iter_devices(reg):
+    """Device entries of a device registry. Since HA 2026.x `reg.devices` is
+    an iterable of entries and using it as a mapping (`.values()`, `.get()`)
+    calls report_usage on every access; before that it was a mapping."""
+    devices = reg.devices
+    return devices.values() if isinstance(devices, Mapping) else devices
+
+
 async def list_devices(
     hass: HomeAssistant,
     *,
@@ -164,7 +173,7 @@ async def list_devices(
             e.entry_id for e in hass.config_entries.async_entries(integration)
         }
     out: list[dict] = []
-    for dev in reg.devices.values():
+    for dev in _iter_devices(reg):
         if area_id and dev.area_id != area_id:
             continue
         if manufacturer and (dev.manufacturer or "").lower() != manufacturer.lower():

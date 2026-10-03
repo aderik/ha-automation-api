@@ -17,6 +17,14 @@ from homeassistant.core import HomeAssistant
 from .const import CONF_ALLOW_HACS, DOMAIN
 
 
+# sort name -> (key, descending)
+_SORTS = {
+    "stars": (lambda r: r.data.stargazers_count or 0, True),
+    "last_updated": (lambda r: r.data.last_updated or "", True),
+    "name": (lambda r: (r.display_name or "").lower(), False),
+}
+
+
 class HacsError(Exception):
     """A request HACS can't fulfil; reported to the caller as a 400."""
 
@@ -49,6 +57,7 @@ def _repo_to_dict(repo) -> dict[str, Any]:
         "pending_upgrade": repo.pending_update,
         "stars": repo.data.stargazers_count,
         "downloads": repo.data.downloads,
+        "last_updated": repo.data.last_updated,
     }
 
 
@@ -58,8 +67,11 @@ async def search(
     query: str | None = None,
     category: str | None = None,
     installed: bool | None = None,
+    sort: str | None = None,
     limit: int = 25,
 ) -> list[dict]:
+    if (sort or "stars") not in _SORTS:
+        raise HacsError(f"invalid sort {sort!r}, expected one of {sorted(_SORTS)}")
     hacs = _hacs(hass)
     q = (query or "").lower()
     repos = [
@@ -82,7 +94,8 @@ async def search(
             )
         )
     ]
-    repos.sort(key=lambda r: r.data.stargazers_count or 0, reverse=True)
+    key, descending = _SORTS[sort or "stars"]
+    repos.sort(key=key, reverse=descending)
     return [_repo_to_dict(r) for r in repos[:limit]]
 
 

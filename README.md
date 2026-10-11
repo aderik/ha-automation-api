@@ -27,6 +27,7 @@ process to run.
   disable and remove
 - Adding integrations through their config flows, including discovered ones
 - Searching the HACS store, installing and removing repositories (opt-in)
+- Adding Matter devices with a pairing code
 - Recorder history with per-entity change counts
 - Built-in MCP server (Streamable HTTP) with a tool for every endpoint
 - Authenticated with Home Assistant's own long-lived access tokens
@@ -199,6 +200,16 @@ store is added as a custom repository first, which needs `category`
 (`integration`, `plugin`, `theme`, ...). A downloaded integration needs a
 restart (`restart_required: true`); then add it with a config flow. Before
 removing an integration, remove its config entries; HACS leaves them behind.
+
+### Matter
+
+`POST /api/automation_api/matter/commission` adds a Matter device with its
+pairing code (`{code, network_only?}`), like the companion app's *Add Matter
+device*. `code` is the 11-digit manual code (dashes allowed) or an `MT:` QR
+payload. For a device that is already in Google Home, Apple Home or
+SmartThings, generate a fresh code there (*Linked Matter apps & services*).
+`network_only` defaults to `true` (device already on the network); `false`
+sets up a new device over Bluetooth. Returns the new `node_id`.
 
 ### History
 

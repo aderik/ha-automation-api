@@ -378,3 +378,21 @@ async def continue_config_flow(
 
 async def abort_config_flow(hass: HomeAssistant, flow_id: str) -> None:
     hass.config_entries.flow.async_abort(flow_id)
+
+
+async def commission_matter(
+    hass: HomeAssistant, code: str, network_only: bool = True
+) -> dict:
+    """Add a Matter device with its pairing code, like the matter/commission
+    websocket command behind the companion app's "Add Matter device"."""
+    if not hass.config_entries.async_loaded_entries("matter"):
+        raise ValueError("the Matter integration is not set up")
+    code = code.strip()
+    if not code.upper().startswith("MT:"):  # manual code: 1234-567-8901
+        code = code.replace("-", "").replace(" ", "")
+    from homeassistant.components.matter.helpers import get_matter
+
+    node = await get_matter(hass).matter_client.commission_with_code(
+        code, network_only=network_only
+    )
+    return {"status": "ok", "node_id": node.node_id}

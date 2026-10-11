@@ -1201,6 +1201,31 @@ class HacsRemoveView(_AuthedView):
         return self.json(result)
 
 
+class MatterCommissionView(_AuthedView):
+    url = "/api/automation_api/matter/commission"
+    name = "api:automation_api:matter:commission"
+
+    async def post(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        body, err = await self._json_body(request)
+        if err:
+            return err
+        code = body.get("code") if isinstance(body, dict) else None
+        if not isinstance(code, str) or not code.strip():
+            return self.json({"error": "missing code"}, status_code=400)
+        await log(hass, "HTTP matter commission")
+        try:
+            result = await registry_mod.commission_matter(
+                hass, code, network_only=body.get("network_only", True) is not False
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        except Exception as e:
+            return self.json({"error": f"commission failed: {e}"}, status_code=500)
+        return self.json(result)
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
     hass.http.register_view(AutomationApiTriggerView)
@@ -1238,4 +1263,5 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(HacsRepositoriesView)
     hass.http.register_view(HacsDownloadView)
     hass.http.register_view(HacsRemoveView)
+    hass.http.register_view(MatterCommissionView)
     hass.http.register_view(HistoryView)

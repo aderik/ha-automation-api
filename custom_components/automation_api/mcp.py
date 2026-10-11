@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.6.1"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "1.7.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -870,6 +870,30 @@ async def hacs_remove(c, repository: str) -> Any:
     `remove_config_entry`; they are left alone otherwise. When
     `restart_required` is true, restart Home Assistant (ask the user first)."""
     return await c(views.HacsRemoveView, "post", body={"repository": repository})
+
+
+# ---------------------------------------------------------------------------
+# Matter
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def commission_matter(c, code: str, network_only: bool | None = None) -> Any:
+    """Add a Matter device to Home Assistant with its pairing code, as the
+    companion app's "Add Matter device" does. `code` is the 11-digit manual
+    code (dashes allowed) or an `MT:` QR payload. For a device already in
+    another ecosystem (Google Home, Apple Home, SmartThings), get a fresh
+    code there via "Linked Matter apps & services" / "Turn on pairing mode";
+    it expires after a few minutes. `network_only` (default true) means the
+    device is already on the network; set false for a new device that must
+    be set up over Bluetooth, which needs Bluetooth on the Matter server.
+    Returns `node_id`; the device appears in `list_devices` with
+    integration 'matter' shortly after. Takes up to a minute."""
+    return await c(
+        views.MatterCommissionView,
+        "post",
+        body={"code": code, "network_only": network_only},
+    )
 
 
 # ---------------------------------------------------------------------------

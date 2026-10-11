@@ -87,7 +87,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 66, len(tools)
+    assert len(tools) == 67, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -272,6 +272,29 @@ def main():
         pass
     else:
         raise AssertionError("entry without host was changed")
+
+    # matter commission: manual code loses its dashes, needs a loaded Matter
+    import homeassistant.components.matter.helpers as matter_helpers
+
+    client = MagicMock()
+    client.commission_with_code = AsyncMock(return_value=SimpleNamespace(node_id=12))
+    matter_helpers.get_matter = lambda h: SimpleNamespace(matter_client=client)
+    fake_ce.async_loaded_entries.return_value = ["matter-entry"]
+    assert asyncio.run(registry.commission_matter(ha, " 1234-567 8901 ")) == {
+        "status": "ok", "node_id": 12,
+    }
+    client.commission_with_code.assert_awaited_with("12345678901", network_only=True)
+    asyncio.run(registry.commission_matter(ha, "MT:Y.K90-Q000KA0648G00", False))
+    client.commission_with_code.assert_awaited_with("MT:Y.K90-Q000KA0648G00", network_only=False)
+    fake_ce.async_loaded_entries.return_value = []
+    try:
+        asyncio.run(registry.commission_matter(ha, "12345678901"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("commissioned without Matter")
+    is_error, text = call("commission_matter", code=" ")
+    assert is_error and "missing code" in text
 
     # device iteration: old mapping registry and the 2026.x entry view
     assert list(registry._iter_devices(SimpleNamespace(devices={"d1": "dev1"}))) == ["dev1"]

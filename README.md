@@ -307,6 +307,7 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Dashboards | Dashboards, views and single cards | No | Yes |
 | Entity and device registry | Yes | No | Yes |
 | Add integrations (config flows) | Yes | No | Yes |
+| Add devices | Matter, with a pairing code | No | Matter, Z-Wave, Zigbee and Thread |
 | HACS | Search, install and remove; changes off by default | No | Yes |
 | History | Yes, with change counts | No | Yes, plus statistics, traces and logs |
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs, plus logs |

@@ -309,9 +309,10 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Add integrations (config flows) | Yes | No | Yes |
 | HACS | Search, install and remove; changes off by default | No | Yes |
 | History | Yes, with change counts | No | Yes, plus statistics, traces and logs |
+| Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs, plus logs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
 | Safeguards | Admin only, HACS opt-in, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 66 | Depends on Assist | 87 |
+| Tools | 70 | Depends on Assist | 87 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,

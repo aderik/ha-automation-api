@@ -87,7 +87,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 67, len(tools)
+    assert len(tools) == 70, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -299,6 +299,59 @@ def main():
     # device iteration: old mapping registry and the 2026.x entry view
     assert list(registry._iter_devices(SimpleNamespace(devices={"d1": "dev1"}))) == ["dev1"]
     assert list(registry._iter_devices(SimpleNamespace(devices=("dev1",)))) == ["dev1"]
+
+    # repairs: active issues only, title/description translated and filled in
+    from datetime import datetime
+
+    issue = SimpleNamespace(
+        domain="sensor", issue_id="units_changed_x", translation_key="units_changed",
+        translation_placeholders={"statistic_id": "sensor.x"}, active=True,
+        severity=SimpleNamespace(value="warning"), breaks_in_ha_version=None,
+        is_fixable=False, learn_more_url=None, created=datetime(2026, 11, 13), data=None,
+    )
+    gone = SimpleNamespace(**{**vars(issue), "issue_id": "old", "active": False})
+    mcp.views.issue_registry.async_get = lambda h: SimpleNamespace(issues={1: issue, 2: gone})
+    mcp.views.translation.async_get_translations = AsyncMock(return_value={
+        "component.sensor.issues.units_changed.title": "Unit of {statistic_id} changed",
+        "component.sensor.issues.units_changed.description": "Bad {missing}",
+    })
+    is_error, text = call("list_repairs")
+    (item,) = json.loads(text)["items"]
+    assert not is_error and item["issue_id"] == "units_changed_x"
+    assert item["title"] == "Unit of sensor.x changed"
+    assert item["description"] == "Bad {missing}"  # unknown placeholder: raw text
+    assert item["severity"] == "warning"
+
+    # notifications
+    mcp.views._async_get_or_create_notifications = lambda h: {
+        "n1": {"notification_id": "n1", "title": None, "message": "Login failed",
+               "created_at": datetime(2026, 11, 13)},
+    }
+    is_error, text = call("list_notifications")
+    assert json.loads(text)["items"][0]["message"] == "Login failed"
+
+    # statistics metadata: same call as the Repairs fix, waits for the recorder
+    import homeassistant.components.recorder.statistics as rec_stats
+    import homeassistant.helpers.typing as ha_typing
+
+    seen = {}
+
+    def fake_update(hass, statistic_id, **kw):
+        seen.update(kw, statistic_id=statistic_id)
+        hass.loop.call_soon_threadsafe = lambda f: f()
+        kw["on_done"]()
+
+    rec_stats.async_update_statistics_metadata = fake_update
+    is_error, text = call(
+        "update_statistic_unit", statistic_id="sensor.x",
+        unit_of_measurement="kWh", unit_class="energy",
+    )
+    assert not is_error and json.loads(text)["status"] == "ok"
+    assert (seen["statistic_id"], seen["new_unit_of_measurement"], seen["new_unit_class"]) == (
+        "sensor.x", "kWh", "energy",
+    )
+    call("update_statistic_unit", statistic_id="sensor.x", unit_of_measurement="kWh")
+    assert seen["new_unit_class"] is ha_typing.UNDEFINED
 
     # bad arguments are a tool error, not a transport error
     is_error, text = call("get_helper", nope=1)

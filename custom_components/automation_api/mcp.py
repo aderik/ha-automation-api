@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.7.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "1.8.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -798,6 +798,64 @@ async def continue_config_flow(
 async def abort_config_flow(c, flow_id: str) -> Any:
     """Abort a config flow in progress."""
     return await c(views.ConfigFlowItemView, "delete", flow_id=flow_id)
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics (repairs + notifications)
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def list_repairs(c) -> Any:
+    """List open repair issues (the Repairs panel).
+
+    Each item has domain, issue_id, resolved title/description, severity,
+    whether it is fixable, the HA version it breaks in, a learn-more URL, plus
+    the raw translation_key/placeholders/data for diagnosing problems.
+    """
+    return await c(views.RepairsView, "get")
+
+
+@tool
+async def list_notifications(c) -> Any:
+    """List active persistent notifications (the bell menu).
+
+    Each item has notification_id, title, message, and created_at. Many
+    integrations post failures here, so it is a good first stop when
+    diagnosing a problem.
+    """
+    return await c(views.NotificationsView, "get")
+
+
+@tool
+async def update_statistic_unit(
+    c,
+    statistic_id: str,
+    unit_of_measurement: str,
+    unit_class: str | None = None,
+) -> Any:
+    """Fix a statistics unit mismatch (the Repairs "Repareren" button).
+
+    Rewrites the long-term statistics metadata unit for `statistic_id` WITHOUT
+    deleting history, the same as Developer Tools > Statistics > Fix. Use when a
+    repair reports the stored unit no longer matches the sensor (e.g. metadata
+    says 'unitless' but the sensor now reports 'kWh').
+
+    Args:
+        statistic_id: e.g. 'sensor.hal_p1_meter_p1_teruglevering_vandaag'.
+        unit_of_measurement: new normalized unit, e.g. 'kWh'.
+        unit_class: unit conversion class, e.g. 'energy'. Strongly recommended;
+            HA Core requires it from 2026.11. Omit only for a unitless statistic.
+    """
+    return await c(
+        views.StatisticsMetadataView,
+        "post",
+        body={
+            "statistic_id": statistic_id,
+            "unit_of_measurement": unit_of_measurement,
+            "unit_class": unit_class,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

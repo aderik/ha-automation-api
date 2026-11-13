@@ -28,6 +28,7 @@ process to run.
 - Adding integrations through their config flows, including discovered ones
 - Searching the HACS store, installing and removing repositories (opt-in)
 - Adding Matter devices with a pairing code
+- Reading repairs and persistent notifications; fixing a statistic's unit
 - Recorder history with per-entity change counts
 - Built-in MCP server (Streamable HTTP) with a tool for every endpoint
 - Authenticated with Home Assistant's own long-lived access tokens
@@ -210,6 +211,26 @@ payload. For a device that is already in Google Home, Apple Home or
 SmartThings, generate a fresh code there (*Linked Matter apps & services*).
 `network_only` defaults to `true` (device already on the network); `false`
 sets up a new device over Bluetooth. Returns the new `node_id`.
+
+### Repairs, notifications and statistics
+
+`GET /api/automation_api/repairs` lists the open issues of the Repairs panel,
+with `title` and `description` translated into Home Assistant's language and
+their placeholders filled in, plus `severity`, `is_fixable`,
+`breaks_in_ha_version`, `learn_more_url` and the raw `translation_key`,
+`translation_placeholders` and `data`.
+
+`GET /api/automation_api/notifications` lists the active persistent
+notifications (`notification_id`, `title`, `message`, `created_at`). Many
+integrations report failures there.
+
+`POST /api/automation_api/statistics/metadata` with
+`{statistic_id, unit_of_measurement, unit_class?}` changes the unit stored in
+the long-term statistics metadata and keeps the history. It is what *Fix* in
+Developer Tools > Statistics does (the `recorder/update_statistics_metadata`
+WebSocket command), for example when a sensor now reports `kWh` and its old
+statistics are unitless. Pass `unit_class` (such as `energy`); Home Assistant
+requires it from 2026.11.
 
 ### History
 

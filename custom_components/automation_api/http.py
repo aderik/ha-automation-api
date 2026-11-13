@@ -10,6 +10,10 @@ from homeassistant.exceptions import Unauthorized
 import voluptuous as vol
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import area_registry, entity_registry, device_registry
+from homeassistant.helpers import issue_registry, translation
+from homeassistant.components.persistent_notification.helpers import (
+    _async_get_or_create_notifications,
+)
 from homeassistant.util.yaml import load_yaml
 
 from .const import DOMAIN, LOG_FILE
@@ -1226,6 +1230,131 @@ class MatterCommissionView(_AuthedView):
         return self.json(result)
 
 
+class RepairsView(_AuthedView):
+    """Read-only list of open repair issues (the Repairs panel)."""
+
+    url = "/api/automation_api/repairs"
+    name = "api:automation_api:repairs"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        reg = issue_registry.async_get(hass)
+        issues = [e for e in reg.issues.values() if e.active]
+        lang = hass.config.language or "en"
+        try:
+            strings = await translation.async_get_translations(
+                hass, lang, "issues", integrations={e.domain for e in issues}
+            )
+        except Exception:
+            strings = {}
+
+        def _text(e, part):
+            raw = strings.get(
+                f"component.{e.domain}.issues.{e.translation_key}.{part}"
+            )
+            if raw is None:
+                return None
+            try:
+                return raw.format(**(e.translation_placeholders or {}))
+            except Exception:
+                return raw
+
+        items = [
+            {
+                "domain": e.domain,
+                "issue_id": e.issue_id,
+                "title": _text(e, "title"),
+                "description": _text(e, "description"),
+                "severity": getattr(e.severity, "value", e.severity),
+                "breaks_in_ha_version": e.breaks_in_ha_version,
+                "is_fixable": e.is_fixable,
+                "learn_more_url": e.learn_more_url,
+                "translation_key": e.translation_key,
+                "translation_placeholders": e.translation_placeholders,
+                "created": e.created.isoformat() if e.created else None,
+                "data": e.data,
+            }
+            for e in issues
+        ]
+        return self.json({"items": items})
+
+
+class NotificationsView(_AuthedView):
+    """Read-only list of active persistent notifications (the bell menu)."""
+
+    url = "/api/automation_api/notifications"
+    name = "api:automation_api:notifications"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        items = []
+        for n in _async_get_or_create_notifications(hass).values():
+            created = n.get("created_at")
+            items.append(
+                {
+                    "notification_id": n.get("notification_id"),
+                    "title": n.get("title"),
+                    "message": n.get("message"),
+                    "created_at": created.isoformat() if created else None,
+                }
+            )
+        return self.json({"items": items})
+
+
+class StatisticsMetadataView(_AuthedView):
+    """Update long-term statistics metadata unit (the Repairs "Repareren"
+    button for a changed unit). Rewrites unit_of_measurement in the statistics
+    meta WITHOUT deleting history, in-process via the recorder (same code path
+    as the recorder/update_statistics_metadata websocket command)."""
+
+    url = "/api/automation_api/statistics/metadata"
+    name = "api:automation_api:statistics:metadata"
+
+    async def post(self, request):
+        import asyncio
+        from homeassistant.components.recorder.statistics import (
+            async_update_statistics_metadata,
+        )
+        from homeassistant.helpers.typing import UNDEFINED
+
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        body, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(body, dict) or "statistic_id" not in body or "unit_of_measurement" not in body:
+            return self.json(
+                {"error": "statistic_id and unit_of_measurement are required"},
+                status_code=400,
+            )
+
+        statistic_id = body["statistic_id"]
+        unit = body["unit_of_measurement"]
+        uc = body.get("unit_class")
+        new_unit_class = UNDEFINED if uc is None else uc
+
+        await log(hass, f"HTTP update statistics metadata {statistic_id} -> {unit} ({uc})")
+        done = asyncio.Event()
+        try:
+            async_update_statistics_metadata(
+                hass,
+                statistic_id,
+                new_unit_class=new_unit_class,
+                new_unit_of_measurement=unit,
+                on_done=lambda: hass.loop.call_soon_threadsafe(done.set),
+                _called_from_ws_api=True,
+            )
+            async with asyncio.timeout(30):
+                await done.wait()
+        except TimeoutError:
+            return self.json({"error": "timed out"}, status_code=504)
+        return self.json(
+            {"status": "ok", "statistic_id": statistic_id, "unit_of_measurement": unit}
+        )
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
     hass.http.register_view(AutomationApiTriggerView)
@@ -1264,4 +1393,7 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(HacsDownloadView)
     hass.http.register_view(HacsRemoveView)
     hass.http.register_view(MatterCommissionView)
+    hass.http.register_view(RepairsView)
+    hass.http.register_view(NotificationsView)
+    hass.http.register_view(StatisticsMetadataView)
     hass.http.register_view(HistoryView)

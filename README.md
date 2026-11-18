@@ -336,12 +336,13 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Entity and device registry | Yes | No | Yes |
 | Add integrations (config flows) | Yes | No | Yes |
 | Add devices | Matter, with a pairing code | No | Matter, Z-Wave, Zigbee and Thread |
-| HACS | Search, install and remove; changes off by default | No | Yes |
+| HACS / Marketplace | Search, install and remove through either; changes off by default | No | Yes, through either |
+| Energy dashboard settings | Read, validate and change, costs included | No | Yes, with a dry run |
 | History | Yes, with change counts | No | Yes, plus statistics, traces and logs |
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs, plus logs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
 | Safeguards | Admin only, HACS opt-in, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 72 | Depends on Assist | 87 |
+| Tools | 72 | Depends on Assist | 86 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,

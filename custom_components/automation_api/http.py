@@ -1358,6 +1358,16 @@ class StatisticsMetadataView(_AuthedView):
 _ENERGY_KEYS = ("energy_sources", "device_consumption", "device_consumption_water")
 
 
+def _energy_hash(prefs) -> str:
+    """Fingerprint of the stored prefs, to refuse a save based on a stale read."""
+    import hashlib
+    import json
+
+    return hashlib.sha256(
+        json.dumps(prefs, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
+
+
 class EnergyPrefsView(_AuthedView):
     """The energy dashboard settings (Settings > Dashboards > Energy), through
     the energy manager as the energy/get_prefs, energy/validate and
@@ -1376,10 +1386,12 @@ class EnergyPrefsView(_AuthedView):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
         manager = await async_get_manager(hass)
+        prefs = manager.data or manager.default_preferences()
         forecast_domains = set(await async_get_energy_platforms(hass))
         return self.json(
             {
-                "prefs": manager.data or manager.default_preferences(),
+                "prefs": prefs,
+                "config_hash": _energy_hash(prefs),
                 "validation": (await async_validate(hass)).as_dict(),
                 # prices are in this currency (Settings > General)
                 "currency": hass.config.currency,
@@ -1407,7 +1419,7 @@ class EnergyPrefsView(_AuthedView):
             return err
         if not isinstance(body, dict):
             return self.json({"error": "body must be an object"}, status_code=400)
-        unknown = set(body) - set(_ENERGY_KEYS)
+        unknown = set(body) - set(_ENERGY_KEYS) - {"dry_run", "config_hash"}
         update = {k: body[k] for k in _ENERGY_KEYS if body.get(k) is not None}
         if unknown or not update:
             return self.json(
@@ -1423,10 +1435,41 @@ class EnergyPrefsView(_AuthedView):
             update = probatio.Schema({k: schemas[k] for k in update})(update)
         except probatio.Invalid as e:
             return self.json({"error": f"invalid: {e}"}, status_code=400)
-        await log(hass, f"HTTP energy prefs update {sorted(update)}")
         manager = await async_get_manager(hass)
+        current = manager.data or manager.default_preferences()
+        current_hash = _energy_hash(current)
+        expected = body.get("config_hash")
+        if expected is not None and expected != current_hash:
+            return self.json(
+                {
+                    "error": "the energy settings changed since config_hash was "
+                    "read; read them again and redo the change",
+                    "config_hash": current_hash,
+                },
+                status_code=409,
+            )
+        changed = sorted(k for k in update if update[k] != current.get(k))
+        if body.get("dry_run"):
+            # Home Assistant fills in derived fields (power sensors) on save
+            return self.json(
+                {
+                    "status": "dry_run",
+                    "changed": changed,
+                    "prefs": {**current, **update},
+                    "config_hash": current_hash,
+                }
+            )
+        # no await between the hash check and the update: nothing can interleave
+        await log(hass, f"HTTP energy prefs update {changed}")
         await manager.async_update(update)
-        return self.json({"status": "ok", "prefs": manager.data})
+        return self.json(
+            {
+                "status": "ok",
+                "changed": changed,
+                "prefs": manager.data,
+                "config_hash": _energy_hash(manager.data),
+            }
+        )
 
 
 def async_register_http(hass: HomeAssistant):

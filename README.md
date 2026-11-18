@@ -247,8 +247,8 @@ Assistant's energy manager as the energy page does (the `energy/get_prefs`,
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/automation_api/energy` | `prefs` (`energy_sources` with their meters and costs, `device_consumption`, `device_consumption_water`), `validation` (the problems the energy page shows), `currency` and `solar_forecast_entries` |
-| `POST` | `/api/automation_api/energy` | Replace one or more of those lists |
+| `GET` | `/api/automation_api/energy` | `prefs` (`energy_sources` with their meters and costs, `device_consumption`, `device_consumption_water`), `config_hash`, `validation` (the problems the energy page shows), `currency` and `solar_forecast_entries` |
+| `POST` | `/api/automation_api/energy` | Replace one or more of those lists; optional `config_hash` and `dry_run` |
 
 Costs live in the sources: a fixed price (`number_energy_price`), a price
 entity (`entity_energy_price`) or a cost statistic (`stat_cost`) for import,
@@ -257,7 +257,11 @@ gas and water; the `_export` variants and `stat_compensation` for grid export;
 description lists every field.
 
 Each list passed replaces the stored one; lists left out stay as they are, so
-read first and send the whole edited list. Input is checked with Home
+read first and send the whole edited list. Pass the `config_hash` of that read:
+when the settings changed in between, nothing is saved and the answer is a 409
+with the current hash. `"dry_run": true` validates and returns the `changed`
+lists and the resulting `prefs` without saving. The MCP tool requires
+`config_hash`. Input is checked with Home
 Assistant's own schemas, and invalid input is a 400.
 
 ### History
@@ -337,7 +341,7 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Add integrations (config flows) | Yes | No | Yes |
 | Add devices | Matter, with a pairing code | No | Matter, Z-Wave, Zigbee and Thread |
 | HACS / Marketplace | Search, install and remove through either; changes off by default | No | Yes, through either |
-| Energy dashboard settings | Read, validate and change, costs included | No | Yes, with a dry run |
+| Energy dashboard settings | Read, validate and change, costs included; dry run and stale-read check | No | Yes, with a dry run |
 | History | Yes, with change counts | No | Yes, plus statistics, traces and logs |
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs, plus logs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |

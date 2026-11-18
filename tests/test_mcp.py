@@ -428,12 +428,22 @@ def main():
 
     manager.async_update = AsyncMock(side_effect=energy_update)
     energy_data.async_get_manager = AsyncMock(return_value=manager)
-    is_error, text = call("set_energy_prefs", device_consumption=[{"stat_consumption": "sensor.d"}])
+    from custom_components.automation_api import http as views_mod
+
+    h = views_mod._energy_hash(manager.data)
+    device = [{"stat_consumption": "sensor.d"}]
+    is_error, text = call("set_energy_prefs", config_hash=h, device_consumption=device, dry_run=True)
+    assert not is_error and json.loads(text)["changed"] == ["device_consumption"], text
+    manager.async_update.assert_not_awaited()
+    is_error, text = call("set_energy_prefs", config_hash=h, device_consumption=device)
     assert not is_error, text
-    manager.async_update.assert_awaited_with({"device_consumption": [{"stat_consumption": "sensor.d"}]})
-    is_error, text = call("set_energy_prefs", energy_sources=[{"type": "bogus"}])
+    manager.async_update.assert_awaited_with({"device_consumption": device})
+    is_error, text = call("set_energy_prefs", config_hash=h, device_consumption=[])
+    assert is_error and "changed since" in text, text  # h is stale now
+    assert manager.async_update.await_count == 1
+    is_error, text = call("set_energy_prefs", config_hash=h, energy_sources=[{"type": "bogus"}])
     assert is_error and "expected type" in text, text
-    is_error, text = call("set_energy_prefs")
+    is_error, text = call("set_energy_prefs", config_hash=h)
     assert is_error and "pass one or more" in text, text
 
     # bad arguments are a tool error, not a transport error

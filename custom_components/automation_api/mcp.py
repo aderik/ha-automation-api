@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.10.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "1.10.1"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -866,23 +866,32 @@ async def get_energy_prefs(c) -> Any:
     `validation` lists the problems the energy page shows, per source and
     device in the same order. `currency` is the currency of the prices;
     `solar_forecast_entries` are the config entries a solar source can use
-    as `config_entry_solar_forecast`. Read this before `set_energy_prefs`;
-    its description lists every field."""
+    as `config_entry_solar_forecast`. `config_hash` identifies this version
+    of the settings; pass it to `set_energy_prefs`. Read this before
+    `set_energy_prefs`; its description lists every field."""
     return await c(views.EnergyPrefsView, "get")
 
 
 @tool
 async def set_energy_prefs(
     c,
+    config_hash: str,
     energy_sources: list[dict[str, Any]] | None = None,
     device_consumption: list[dict[str, Any]] | None = None,
     device_consumption_water: list[dict[str, Any]] | None = None,
+    dry_run: bool = False,
 ) -> Any:
     """Change the energy dashboard settings, entities and costs alike.
-    Each argument passed REPLACES that whole list, so start from
-    `get_energy_prefs` and send the full edited list; arguments left out
-    stay as they are. Validated with Home Assistant's own schemas; `name`
+    Each list passed REPLACES that whole list, so start from
+    `get_energy_prefs` and send the full edited list; lists left out stay
+    as they are. Validated with Home Assistant's own schemas; `name`
     (display name) is optional everywhere.
+
+    `config_hash` is the one `get_energy_prefs` returned: when the settings
+    changed since, nothing is saved and the call fails (read again and redo
+    the change). With `dry_run` the input is validated and the result shows
+    the `changed` lists and the resulting `prefs` without saving; show that
+    to the user before saving a change they did not spell out.
 
     `energy_sources` items, by `type`:
     - grid (one per connection; at least one meter or power sensor):
@@ -914,6 +923,8 @@ async def set_energy_prefs(
         views.EnergyPrefsView,
         "post",
         body={
+            "config_hash": config_hash,
+            "dry_run": dry_run,
             "energy_sources": energy_sources,
             "device_consumption": device_consumption,
             "device_consumption_water": device_consumption_water,

@@ -4,10 +4,10 @@
       "init": {
         "title": "Automation API options",
         "data": {
-          "allow_hacs": "Allow HACS downloads"
+          "allow_hacs": "Allow HACS / Marketplace downloads"
         },
         "data_description": {
-          "allow_hacs": "Lets API and MCP clients install, update and remove HACS repositories. These run third-party code with full Home Assistant rights."
+          "allow_hacs": "Lets API and MCP clients install, update and remove repositories through HACS or the Marketplace. These run third-party code with full Home Assistant rights."
         }
       }
     }

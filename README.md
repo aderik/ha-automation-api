@@ -26,7 +26,7 @@ process to run.
 - Entity, device and config-entry registries, including reload, enable,
   disable and remove
 - Adding integrations through their config flows, including discovered ones
-- Searching the HACS store, installing and removing repositories (opt-in)
+- Searching the Marketplace / HACS store, installing and removing repositories (opt-in)
 - Adding Matter devices with a pairing code
 - Reading repairs and persistent notifications; fixing a statistic's unit
 - Recorder history with per-entity change counts
@@ -179,14 +179,18 @@ integrations need a browser and can't be finished through the API.
 | `POST` | `/api/automation_api/config_flows/{flow_id}` | Submit `{user_input}`; without a body, return the current step |
 | `DELETE` | `/api/automation_api/config_flows/{flow_id}` | Abort a flow |
 
-### HACS
+### HACS / Marketplace
 
-Search the HACS store and install, update or remove repositories. HACS has no public
-API, so this mirrors its own websocket commands (tested against HACS 2.0.5)
-and may break when HACS changes.
+Search the store and install, update or remove repositories. Home Assistant
+2026.11 took HACS into core as the **Marketplace** integration; on older
+installs the HACS custom integration is used. The Marketplace wins when both
+are loaded; the endpoints and MCP tools (`hacs_*`) are the same for both.
+Neither has a public API, so this mirrors their own websocket commands
+(tested against the Marketplace of 2026.11 and HACS 2.0.5) and may break when
+they change.
 
 Downloading installs third-party code that runs with full Home Assistant
-rights, so downloads and removals are **off by default**: enable *Allow HACS downloads* under
+rights, so downloads and removals are **off by default**: enable *Allow HACS / Marketplace downloads* under
 Settings → Devices & services → Automation API → Configure. Searching works
 either way.
 
@@ -196,11 +200,13 @@ either way.
 | `POST` | `/api/automation_api/hacs/download` | Install or update (`{repository, category?, version?}`) |
 | `POST` | `/api/automation_api/hacs/remove` | Uninstall (`{repository}`); HACS itself and this integration are refused |
 
-`repository` is a HACS id or `owner/repo`. A repository that isn't in the
+`repository` is a store id or `owner/repo`. A repository that isn't in the
 store is added as a custom repository first, which needs `category`
 (`integration`, `plugin`, `theme`, ...). A downloaded integration needs a
 restart (`restart_required: true`); then add it with a config flow. Before
-removing an integration, remove its config entries; HACS leaves them behind.
+removing an integration, remove its config entries: the Marketplace refuses
+while they exist, HACS leaves them behind. The option above replaces the
+Marketplace's own first-run warning for API and MCP clients.
 
 ### Matter
 

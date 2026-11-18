@@ -28,7 +28,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class OptionsFlow(config_entries.OptionsFlow):
-    """Opt-in for HACS downloads, which install third-party code."""
+    """Opt-in for HACS / Marketplace downloads, which install third-party code."""
 
     async def async_step_init(self, user_input=None):
         if user_input is not None:

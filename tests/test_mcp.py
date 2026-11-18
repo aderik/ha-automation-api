@@ -14,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 STUBBED = ("homeassistant", "aiohttp", "voluptuous", "probatio")
 
@@ -41,6 +41,10 @@ class Unauthorized(Exception):
     pass
 
 
+class HomeAssistantError(Exception):
+    pass
+
+
 sys.meta_path.insert(0, _StubFinder())
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -50,6 +54,7 @@ import homeassistant.helpers.json  # noqa: E402
 
 homeassistant.components.http.HomeAssistantView = FakeView
 homeassistant.exceptions.Unauthorized = Unauthorized
+homeassistant.exceptions.HomeAssistantError = HomeAssistantError
 homeassistant.helpers.json.json_dumps = json.dumps
 
 from custom_components.automation_api import mcp  # noqa: E402
@@ -191,6 +196,7 @@ def main():
     hacs_base.system.disabled = False
     hacs_base.common.categories = {"integration", "plugin"}
     hacs_base.common.skip = set()
+    hacs_base.common.renamed_repositories = {}
     hacs_base.repositories.get_by_id.return_value = None
     hacs_base.repositories.get_by_full_name.side_effect = store.get
     hacs_base.async_recreate_entities = AsyncMock()
@@ -201,7 +207,11 @@ def main():
 
     hacs_base.async_register_repository = AsyncMock(side_effect=register)
     entry = SimpleNamespace(options={})
-    fake_hass = SimpleNamespace(data={"hacs": hacs_base, "automation_api": {"entry": entry}})
+    no_entries = SimpleNamespace(async_loaded_entries=lambda d: [], async_entries=lambda d: [])
+    fake_hass = SimpleNamespace(
+        data={"hacs": hacs_base, "automation_api": {"entry": entry}},
+        config_entries=no_entries,
+    )
 
     def run(coro):
         try:
@@ -217,7 +227,7 @@ def main():
     assert result["full_name"] == "a/b" and result["restart_required"], result
     store["a/b"].async_download_repository.assert_awaited_with(ref=None)
     hacs_base.async_recreate_entities.assert_awaited()
-    hacs_base.async_register_repository.side_effect = None  # validation fails
+    hacs_base.async_register_repository = AsyncMock(return_value=None)  # validation fails
     assert "validation failed" in str(run(hacs.download(fake_hass, "c/d", category="plugin")))
 
     # remove: only installed repos, never HACS itself; gated like downloads
@@ -247,6 +257,46 @@ def main():
     assert names(sort="last_updated") == ["a/new", "b/old", "c/none"]
     assert names(sort="name") == ["a/new", "b/old", "c/none"]
     assert "invalid sort" in str(run(hacs.search(fake_hass, sort="bogus")))
+
+    # Marketplace (2026.11+): preferred over HACS, install + errors as 400s
+    sys.modules["homeassistant.components.marketplace"] = MagicMock()
+    sys.modules["homeassistant.components.marketplace.const"] = MagicMock()
+
+    class MarketplaceManager(MagicMock):
+        pass
+
+    mp = MarketplaceManager()
+    mp.system.disabled = False
+    mp.common.categories = {"integration"}
+    mp.common.skip = set()
+    mp.common.renamed_repositories = {}
+    mp.data.async_write = AsyncMock()
+    mp_repo = fake_repo("m/p")
+    mp_repo.async_install_repository = AsyncMock()
+    mp.repositories.get_by_id.return_value = None
+    mp.repositories.get_by_full_name.side_effect = {"m/p": mp_repo}.get
+    in_use = []
+    fake_hass.config_entries = SimpleNamespace(
+        async_loaded_entries=lambda d: [SimpleNamespace(runtime_data=mp)],
+        async_entries=lambda d: in_use,
+    )
+    async def install(ref):
+        mp_repo.data.installed = True
+
+    mp_repo.async_install_repository.side_effect = install
+    with patch.object(hacs, "async_dispatcher_send") as dispatched:
+        result = run(hacs.download(fake_hass, "m/p", version="v2"))
+    assert result["restart_required"] and dispatched.called, result
+    mp_repo.async_install_repository.assert_awaited_with(ref="v2")
+    mp_repo.async_download_repository.assert_not_awaited()
+    mp.async_register_repository = AsyncMock(return_value=["bad manifest"])
+    assert "bad manifest" in str(run(hacs.download(fake_hass, "x/y", category="integration")))
+    mp_repo.async_install_repository.side_effect = HomeAssistantError("busy")
+    assert str(run(hacs.download(fake_hass, "m/p"))) == "busy"
+    in_use.append(object())
+    assert "in use" in str(run(hacs.remove(fake_hass, "m/p")))
+    mp.system.disabled = True
+    assert "disabled" in str(run(hacs.search(fake_hass)))
 
     # config entry host: only the address is exposed, and only it is changed
     entry_obj = SimpleNamespace(

@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.8.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "1.9.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -859,7 +859,7 @@ async def update_statistic_unit(
 
 
 # ---------------------------------------------------------------------------
-# HACS
+# HACS / Marketplace
 # ---------------------------------------------------------------------------
 
 
@@ -872,7 +872,8 @@ async def hacs_search(
     sort: str | None = None,
     limit: int | None = None,
 ) -> Any:
-    """Search the HACS store. `query` matches name, `owner/repo`,
+    """Search the store: the Marketplace (Home Assistant 2026.11+) or, on
+    older installs, HACS. `query` matches name, `owner/repo`,
     description and domain; `category` is e.g. 'integration', 'plugin'
     (dashboard cards), 'theme'; `installed` filters on installed state.
     `sort` is 'stars' (default, most first), 'last_updated' (most recent
@@ -900,8 +901,8 @@ async def hacs_download(
     category: str | None = None,
     version: str | None = None,
 ) -> Any:
-    """Install or update a HACS repository: `repository` is its `id` or
-    `owner/repo`. A repository not in the HACS store is added as a custom
+    """Install or update a repository through the Marketplace or HACS:
+    `repository` is its `id` or `owner/repo`. A repository not in the store is added as a custom
     repository first, which needs `category`. `version` picks a release tag
     (default: latest).
 
@@ -919,13 +920,15 @@ async def hacs_download(
 
 @tool
 async def hacs_remove(c, repository: str) -> Any:
-    """Uninstall a repository downloaded through HACS: `repository` is its
+    """Uninstall a repository downloaded through the Marketplace or HACS:
+    `repository` is its
     `id` or `owner/repo`. Only use it when the user asked to remove that
     repository; it fails unless 'Allow HACS downloads' is on in the
     integration options. HACS itself and this integration can't be removed.
 
     For an integration, first remove its config entries with
-    `remove_config_entry`; they are left alone otherwise. When
+    `remove_config_entry`; the Marketplace refuses otherwise, HACS leaves
+    them behind. When
     `restart_required` is true, restart Home Assistant (ask the user first)."""
     return await c(views.HacsRemoveView, "post", body={"repository": repository})
 

@@ -29,6 +29,7 @@ process to run.
 - Searching the Marketplace / HACS store, installing and removing repositories (opt-in)
 - Adding Matter devices with a pairing code
 - Reading repairs and persistent notifications; fixing a statistic's unit
+- Reading and changing the energy dashboard settings
 - Recorder history with per-entity change counts
 - Built-in MCP server (Streamable HTTP) with a tool for every endpoint
 - Authenticated with Home Assistant's own long-lived access tokens
@@ -238,6 +239,27 @@ WebSocket command), for example when a sensor now reports `kWh` and its old
 statistics are unitless. Pass `unit_class` (such as `energy`); Home Assistant
 requires it from 2026.11.
 
+### Energy
+
+The settings of Settings > Dashboards > Energy, read and written through Home
+Assistant's energy manager as the energy page does (the `energy/get_prefs`,
+`energy/validate` and `energy/save_prefs` WebSocket commands).
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/automation_api/energy` | `prefs` (`energy_sources` with their meters and costs, `device_consumption`, `device_consumption_water`), `validation` (the problems the energy page shows), `currency` and `solar_forecast_entries` |
+| `POST` | `/api/automation_api/energy` | Replace one or more of those lists |
+
+Costs live in the sources: a fixed price (`number_energy_price`), a price
+entity (`entity_energy_price`) or a cost statistic (`stat_cost`) for import,
+gas and water; the `_export` variants and `stat_compensation` for grid export;
+`cost_adjustment_day` for a fixed daily cost. The `set_energy_prefs` tool
+description lists every field.
+
+Each list passed replaces the stored one; lists left out stay as they are, so
+read first and send the whole edited list. Input is checked with Home
+Assistant's own schemas, and invalid input is a 400.
+
 ### History
 
 `GET /api/automation_api/history?entity_id=sensor.x&hours=24` returns the
@@ -319,7 +341,7 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs, plus logs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
 | Safeguards | Admin only, HACS opt-in, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 70 | Depends on Assist | 87 |
+| Tools | 72 | Depends on Assist | 87 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,

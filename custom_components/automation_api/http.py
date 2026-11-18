@@ -1355,6 +1355,80 @@ class StatisticsMetadataView(_AuthedView):
         )
 
 
+_ENERGY_KEYS = ("energy_sources", "device_consumption", "device_consumption_water")
+
+
+class EnergyPrefsView(_AuthedView):
+    """The energy dashboard settings (Settings > Dashboards > Energy), through
+    the energy manager as the energy/get_prefs, energy/validate and
+    energy/save_prefs websocket commands do."""
+
+    url = "/api/automation_api/energy"
+    name = "api:automation_api:energy"
+
+    async def get(self, request):
+        from homeassistant.components.energy.data import async_get_manager
+        from homeassistant.components.energy.validate import async_validate
+        from homeassistant.components.energy.websocket_api import (
+            async_get_energy_platforms,
+        )
+
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        manager = await async_get_manager(hass)
+        forecast_domains = set(await async_get_energy_platforms(hass))
+        return self.json(
+            {
+                "prefs": manager.data or manager.default_preferences(),
+                "validation": (await async_validate(hass)).as_dict(),
+                # prices are in this currency (Settings > General)
+                "currency": hass.config.currency,
+                # config entries usable as config_entry_solar_forecast
+                "solar_forecast_entries": [
+                    {"entry_id": e.entry_id, "domain": e.domain, "title": e.title}
+                    for e in hass.config_entries.async_entries()
+                    if e.domain in forecast_domains
+                ],
+            }
+        )
+
+    async def post(self, request):
+        import probatio
+        from homeassistant.components.energy.data import (
+            DEVICE_CONSUMPTION_SCHEMA,
+            ENERGY_SOURCE_SCHEMA,
+            async_get_manager,
+        )
+
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        body, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(body, dict):
+            return self.json({"error": "body must be an object"}, status_code=400)
+        unknown = set(body) - set(_ENERGY_KEYS)
+        update = {k: body[k] for k in _ENERGY_KEYS if body.get(k) is not None}
+        if unknown or not update:
+            return self.json(
+                {"error": f"pass one or more of {list(_ENERGY_KEYS)}"},
+                status_code=400,
+            )
+        schemas = {
+            "energy_sources": ENERGY_SOURCE_SCHEMA,
+            "device_consumption": [DEVICE_CONSUMPTION_SCHEMA],
+            "device_consumption_water": [DEVICE_CONSUMPTION_SCHEMA],
+        }
+        try:
+            update = probatio.Schema({k: schemas[k] for k in update})(update)
+        except probatio.Invalid as e:
+            return self.json({"error": f"invalid: {e}"}, status_code=400)
+        await log(hass, f"HTTP energy prefs update {sorted(update)}")
+        manager = await async_get_manager(hass)
+        await manager.async_update(update)
+        return self.json({"status": "ok", "prefs": manager.data})
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
     hass.http.register_view(AutomationApiTriggerView)
@@ -1396,4 +1470,5 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(RepairsView)
     hass.http.register_view(NotificationsView)
     hass.http.register_view(StatisticsMetadataView)
+    hass.http.register_view(EnergyPrefsView)
     hass.http.register_view(HistoryView)

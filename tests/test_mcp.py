@@ -92,7 +92,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 70, len(tools)
+    assert len(tools) == 72, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -402,6 +402,39 @@ def main():
     )
     call("update_statistic_unit", statistic_id="sensor.x", unit_of_measurement="kWh")
     assert seen["new_unit_class"] is ha_typing.UNDEFINED
+
+    # energy prefs: only the passed lists change, after HA's schema check
+    import probatio
+    import homeassistant.components.energy.data as energy_data
+
+    class Invalid(Exception):
+        pass
+
+    probatio.Invalid = Invalid
+
+    def schema(spec):
+        def check(value):
+            for source in value.get("energy_sources", []):
+                if source.get("type") not in ("grid", "solar"):
+                    raise Invalid("expected type to be one of grid, solar")
+            return value
+        return check
+
+    probatio.Schema = schema
+    manager = MagicMock(data={"energy_sources": [], "device_consumption": []})
+
+    async def energy_update(update):
+        manager.data = {**manager.data, **update}
+
+    manager.async_update = AsyncMock(side_effect=energy_update)
+    energy_data.async_get_manager = AsyncMock(return_value=manager)
+    is_error, text = call("set_energy_prefs", device_consumption=[{"stat_consumption": "sensor.d"}])
+    assert not is_error, text
+    manager.async_update.assert_awaited_with({"device_consumption": [{"stat_consumption": "sensor.d"}]})
+    is_error, text = call("set_energy_prefs", energy_sources=[{"type": "bogus"}])
+    assert is_error and "expected type" in text, text
+    is_error, text = call("set_energy_prefs")
+    assert is_error and "pass one or more" in text, text
 
     # bad arguments are a tool error, not a transport error
     is_error, text = call("get_helper", nope=1)

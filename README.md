@@ -1,16 +1,17 @@
 <p align="center">
   <a href="https://github.com/aderik/ha-automation-api/releases"><img src="https://img.shields.io/github/v/release/aderik/ha-automation-api" alt="Release" /></a>
   <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5.svg" alt="HACS custom repository" /></a>
+  <a href="https://github.com/aderik/ha-automation-api/actions/workflows/validate.yml"><img src="https://github.com/aderik/ha-automation-api/actions/workflows/validate.yml/badge.svg" alt="Validate" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/aderik/ha-automation-api" alt="License" /></a>
 </p>
 
-# Automation API
+# Automation API: MCP server and REST API for Home Assistant
 
-A Home Assistant custom integration that exposes a REST and WebSocket API for
-managing configuration that the built-in API leaves out: automations,
-helpers, template entities, Lovelace dashboards, registries, integrations,
-HACS and recorder history. It is built for machine clients: AI agents, n8n or Make, custom
-dashboards and CI pipelines.
+A Home Assistant custom integration that lets AI agents (Claude, Cursor or any
+other MCP client) and scripts (n8n, Make, CI pipelines) configure Home
+Assistant. It exposes a REST and WebSocket API for what the built-in API
+leaves out: automations, helpers, template entities, Lovelace dashboards,
+registries, integrations, HACS and recorder history.
 
 The integration also serves a built-in [MCP server](#mcp-server) that exposes
 every endpoint below as a tool for MCP-capable agents, with no separate

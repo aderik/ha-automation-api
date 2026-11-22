@@ -1,10 +1,19 @@
 {
   "domain": "automation_api",
   "name": "Automation API",
-  "version": "1.10.1",
-  "documentation": "https://github.com/aderik/ha-automation-api",
-  "requirements": [],
-  "codeowners": ["@aderik"],
+  "after_dependencies": [
+    "energy",
+    "marketplace",
+    "matter",
+    "recorder"
+  ],
+  "codeowners": [
+    "@aderik"
+  ],
   "config_flow": true,
-  "iot_class": "local_push"
+  "documentation": "https://github.com/aderik/ha-automation-api",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/aderik/ha-automation-api/issues",
+  "requirements": [],
+  "version": "1.10.2"
 }

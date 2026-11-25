@@ -2,7 +2,7 @@
 
 Home Assistant 2026.11 took HACS into core as the Marketplace integration;
 older installs still have the HACS custom integration. This module is a
-client of the store, like the store's own panel: through `ws_client` it
+client of the store, like the store's own panel: through `ha_client` it
 connects to this Home Assistant's WebSocket API with the caller's access
 token and sends the store's commands (`marketplace/repositories/list`,
 `marketplace/repository/install`, ..., or their `hacs/...` counterparts of
@@ -24,7 +24,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from .const import CONF_ALLOW_HACS, DOMAIN
-from .ws_client import connect as _connect
+from .ha_client import connect as _connect
 
 
 # sort name -> (key, descending)

@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.12.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "2.0.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -155,7 +155,8 @@ async def create_or_update_automation(
     description: str = "",
     mode: str = "single",
 ) -> Any:
-    """Create or update an automation (written to automations.yaml + reloaded).
+    """Create or update an automation, as the automation editor saves it:
+    Home Assistant validates the config, stores it and reloads it.
 
     Args:
         id: Stable slug (no 'automation.' prefix), e.g. 'living_room_lights_on'.
@@ -180,7 +181,7 @@ async def create_or_update_automation(
 
 @tool
 async def delete_automation(c, automation_id: str) -> Any:
-    """Delete an automation by id (removes it from automations.yaml)."""
+    """Delete an automation by id, as the automation editor does."""
     return await c(views.AutomationApiView, "delete", query={"id": automation_id})
 
 
@@ -225,7 +226,7 @@ async def get_automation_api_log(c) -> Any:
     """Return the Automation API log file (automation_api.log).
 
     Contains a record of every create/update/delete/trigger the integration
-    has performed via REST, WebSocket, MCP, or service calls.
+    has performed via REST or MCP.
     """
     # The REST view streams a FileResponse; read the file directly instead.
     path = Path(c.hass.config.path(LOG_FILE))
@@ -233,39 +234,68 @@ async def get_automation_api_log(c) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Managed configuration (<config>/packages/automation_api.yaml)
+# Scripts
 # ---------------------------------------------------------------------------
 
 
 @tool
-async def get_managed_package(c) -> Any:
-    """Return the full managed package file as JSON (helpers, templates, etc.)."""
-    return await c(views.PackageView, "get")
+async def get_script(c, script_id: str) -> Any:
+    """Return the stored config of a script by its id (the part after
+    'script.'), e.g. {"alias": ..., "sequence": [...], "mode": ...}."""
+    return await c(views.ScriptItemView, "get", script_id=script_id)
 
 
 @tool
-async def overwrite_managed_package(c, content: dict[str, Any]) -> Any:
-    """Overwrite the entire managed package file (expert / bulk migration use).
-
-    Triggers homeassistant.reload_all afterwards. Prefer the targeted
-    upsert_* tools for day-to-day changes.
-    """
-    return await c(views.PackageView, "put", body=content)
-
-
-@tool
-async def upsert_helper(c, domain: str, helper_id: str, config: dict[str, Any]) -> Any:
-    """Create or update a helper (reloads the domain automatically).
+async def create_or_update_script(c, script_id: str, config: dict[str, Any]) -> Any:
+    """Create or replace a script, as the script editor saves it: Home
+    Assistant validates the config, stores it and reloads it.
 
     Args:
-        domain: One of input_boolean / input_datetime / input_number /
-                input_select / input_text / input_button.
-        helper_id: Slug used as the helper id, e.g. 'moestuin_startdatum'.
-        config: Full YAML config dict for the helper. Examples:
-            input_boolean → {"name": "...", "initial": true, "icon": "mdi:bell"}
+        script_id: Slug that becomes the entity id 'script.<script_id>'.
+        config: Full script config, e.g. {"alias": "Water given",
+            "sequence": [{"action": "input_datetime.set_datetime", ...}],
+            "mode": "single", "icon": "mdi:watering-can", "fields": {...}}.
+
+    A script with `fields` that calls several notify services is the way to
+    get a notify group that passes `data` on.
+    """
+    return await c(views.ScriptItemView, "put", body=config, script_id=script_id)
+
+
+@tool
+async def delete_script(c, script_id: str) -> Any:
+    """Delete a script by its id, as the script editor does."""
+    return await c(views.ScriptItemView, "delete", script_id=script_id)
+
+
+# ---------------------------------------------------------------------------
+# Helpers — ordinary UI helpers, as made under Settings → Helpers
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def upsert_helper(
+    c, domain: str, config: dict[str, Any], helper_id: str | None = None
+) -> Any:
+    """Create an input helper, or replace the config of an existing one.
+
+    Without `helper_id` a helper is created; Home Assistant derives its id
+    and entity id from `name` ('Garden start' → input_datetime.garden_start).
+    With `helper_id` (from `list_helpers`) that helper gets `config` as its
+    full new config. The result holds the helper with its `id` and
+    `entity_id`. It is live at once and editable in the UI.
+
+    Args:
+        domain: One of input_boolean / input_button / input_datetime /
+                input_number / input_select / input_text.
+        config: Full config of the helper, `name` included. Examples:
+            input_boolean → {"name": "...", "icon": "mdi:bell"}
             input_datetime → {"name": "...", "has_date": true, "has_time": false}
             input_number  → {"name": "...", "min": 0, "max": 100, "step": 1}
+            input_select  → {"name": "...", "options": ["a", "b"]}
     """
+    if helper_id is None:
+        return await c(views.HelpersListView, "post", body=config, domain=domain)
     return await c(
         views.HelperItemView, "put", body=config, domain=domain, helper_id=helper_id
     )
@@ -273,125 +303,114 @@ async def upsert_helper(c, domain: str, helper_id: str, config: dict[str, Any]) 
 
 @tool
 async def delete_helper(c, domain: str, helper_id: str) -> Any:
-    """Delete a helper from the managed package and reload the domain."""
+    """Delete an input helper by its id (from `list_helpers`)."""
     return await c(views.HelperItemView, "delete", domain=domain, helper_id=helper_id)
 
 
 @tool
 async def list_helpers(c, domain: str) -> Any:
-    """List helpers of the given domain in the managed package."""
+    """List the UI helpers of the given domain, by id, each with its config
+    and `entity_id`. Helpers defined in YAML are not listed."""
     return await c(views.HelpersListView, "get", domain=domain)
 
 
 @tool
 async def get_helper(c, domain: str, helper_id: str) -> Any:
-    """Return the config of a single helper in the managed package."""
+    """Return the config and `entity_id` of a single UI helper."""
     return await c(views.HelperItemView, "get", domain=domain, helper_id=helper_id)
 
 
 @tool
 async def upsert_template_entity(
-    c, template_type: str, name: str, config: dict[str, Any]
+    c, template_type: str, config: dict[str, Any], entry_id: str | None = None
 ) -> Any:
-    """Create or update a template entity (reloads the template domain).
+    """Create a template entity, or change an existing one, as the Template
+    helper under Settings → Helpers does. It is live at once.
+
+    Without `entry_id` an entity is created from `config`, which needs
+    `name`. With `entry_id` (from `list_template_entities`) `config` replaces
+    the options of that entity; `name` can't be changed there, and optional
+    fields left out are cleared. The result holds `entry_id`, `config` and
+    the `entities` created.
 
     Args:
-        template_type: One of sensor / binary_sensor / switch / button /
-                       number / select.
-        name: Display name; also the unique key used for upsert.
-        config: Template config (e.g. {"state": "{{ ... }}",
-                "unit_of_measurement": "d", "icon": "mdi:sprout",
-                "unique_id": "...", ...}).
+        template_type: sensor, binary_sensor, switch, button, number, select
+            or any other type the Template helper offers.
+        config: The fields of the helper's form, e.g. for a sensor
+            {"name": "Days since watering", "state": "{{ ... }}",
+             "unit_of_measurement": "d", "device_class": "duration",
+             "state_class": "measurement"}; `advanced_options` holds
+            {"availability": "{{ ... }}"}. Only what the form offers is
+            accepted: no attributes, icon templates or triggers. Set a fixed
+            icon with `update_registry_entity`.
     """
+    if entry_id is None:
+        return await c(views.TemplateListView, "post", body=config, kind=template_type)
     return await c(
-        views.TemplateItemView, "put", body=config, ttype=template_type, name=name
+        views.TemplateItemView, "put", body=config, kind=template_type, entry_id=entry_id
     )
 
 
 @tool
-async def delete_template_entity(c, template_type: str, name: str) -> Any:
-    """Delete a template entity by type + name (reloads template domain)."""
-    return await c(views.TemplateItemView, "delete", ttype=template_type, name=name)
+async def delete_template_entity(c, template_type: str, entry_id: str) -> Any:
+    """Delete a template entity made as a helper, by type and `entry_id`."""
+    return await c(
+        views.TemplateItemView, "delete", kind=template_type, entry_id=entry_id
+    )
 
 
 @tool
 async def list_template_entities(c, template_type: str) -> Any:
-    """List all template entities of the given type in the managed package."""
-    return await c(views.TemplateListView, "get", ttype=template_type)
+    """List the template entities of the given type made as helpers, each
+    with `entry_id`, `config` and `entities`. Template entities defined in
+    YAML are not listed."""
+    return await c(views.TemplateListView, "get", kind=template_type)
 
 
 @tool
-async def get_template_entity(c, template_type: str, name: str) -> Any:
-    """Return the config of a single template entity by type + name."""
-    return await c(views.TemplateItemView, "get", ttype=template_type, name=name)
+async def get_template_entity(c, template_type: str, entry_id: str) -> Any:
+    """Return the config of a single template entity by type and `entry_id`."""
+    return await c(views.TemplateItemView, "get", kind=template_type, entry_id=entry_id)
 
 
 @tool
-async def upsert_history_stats_sensor(c, name: str, config: dict[str, Any]) -> Any:
-    """Create or update a history_stats sensor entry.
+async def upsert_history_stats_sensor(
+    c, config: dict[str, Any], entry_id: str | None = None
+) -> Any:
+    """Create a history_stats sensor, or change an existing one, as the
+    History stats helper under Settings → Helpers does. It is live at once.
 
-    A HA restart is required for it to take effect (response includes
-    restart_required=true). Example config:
-        {"entity_id": "binary_sensor.moestuin_regent",
-         "state": "on", "type": "time",
+    Without `entry_id` a sensor is created from `config`. With `entry_id`
+    (from `list_history_stats_sensors`) `config` replaces its options: only
+    start, end, duration and state_class can be changed, and optional fields
+    left out are cleared. Example config:
+        {"name": "Rain last 2h", "entity_id": "binary_sensor.raining",
+         "state": ["on"], "type": "time",
          "end": "{{ now() }}", "duration": {"hours": 2}}
+    Exactly two of start, end and duration are needed.
     """
-    return await c(views.HistoryStatsItemView, "put", body=config, name=name)
+    if entry_id is None:
+        return await c(views.HistoryStatsListView, "post", body=config)
+    return await c(views.HistoryStatsItemView, "put", body=config, entry_id=entry_id)
 
 
 @tool
-async def delete_history_stats_sensor(c, name: str) -> Any:
-    """Delete a history_stats sensor (HA restart required)."""
-    return await c(views.HistoryStatsItemView, "delete", name=name)
+async def delete_history_stats_sensor(c, entry_id: str) -> Any:
+    """Delete a history_stats sensor made as a helper, by `entry_id`."""
+    return await c(views.HistoryStatsItemView, "delete", entry_id=entry_id)
 
 
 @tool
 async def list_history_stats_sensors(c) -> Any:
-    """List all history_stats sensors in the managed package."""
+    """List the history_stats sensors made as helpers, each with `entry_id`,
+    `config` and `entities`. Sensors defined in YAML are not listed."""
     return await c(views.HistoryStatsListView, "get")
 
 
 @tool
-async def get_history_stats_sensor(c, name: str) -> Any:
-    """Return the config of a single history_stats sensor."""
-    return await c(views.HistoryStatsItemView, "get", name=name)
-
-
-@tool
-async def upsert_notify_group(
-    c, name: str, services: list[str], extra: dict[str, Any] | None = None
-) -> Any:
-    """Create or update a notify platform:group entry.
-
-    After writing, HA must be restarted before `notify.<name>` becomes
-    available (notify does not support hot reload).
-
-    Args:
-        name: Group name; service becomes `notify.<name>`.
-        services: List of notify services to aggregate, e.g.
-                  ["mobile_app_sm_s911b", "mobile_app_s25"].
-        extra: Optional extra top-level keys to include on the group entry.
-    """
-    body = {**(extra or {}), "services": services}
-    return await c(views.NotifyGroupItemView, "put", body=body, name=name)
-
-
-@tool
-async def delete_notify_group(c, name: str) -> Any:
-    """Delete a notify group (HA restart required)."""
-    return await c(views.NotifyGroupItemView, "delete", name=name)
-
-
-@tool
-async def list_notify_groups(c) -> Any:
-    """List all notify groups in the managed package."""
-    return await c(views.NotifyGroupListView, "get")
-
-
-@tool
-async def get_notify_group(c, name: str) -> Any:
-    """Return the config of a single notify group."""
-    return await c(views.NotifyGroupItemView, "get", name=name)
+async def get_history_stats_sensor(c, entry_id: str) -> Any:
+    """Return the config of a single history_stats sensor by `entry_id`."""
+    return await c(views.HistoryStatsItemView, "get", entry_id=entry_id)
 
 
 @tool
@@ -411,8 +430,8 @@ async def reload_config(c, domains: list[str] | None = None) -> Any:
 async def restart_home_assistant(c) -> Any:
     """Schedule a Home Assistant restart (fire-and-forget).
 
-    Use after creating/updating/deleting notify groups or history_stats
-    sensors, which have no reload service.
+    Needed after installing an integration; helpers, automations, scripts
+    and dashboards made here are live without one.
     """
     return await c(views.RestartView, "post")
 

@@ -9,9 +9,15 @@
 
 A Home Assistant custom integration that lets AI agents (Claude, Cursor or any
 other MCP client) and scripts (n8n, Make, CI pipelines) configure Home
-Assistant. It exposes a REST and WebSocket API for what the built-in API
-leaves out: automations, helpers, template entities, Lovelace dashboards,
+Assistant. It exposes a REST API for what the built-in API leaves out:
+automations, scripts, helpers, template entities, Lovelace dashboards,
 registries, integrations, HACS and recorder history.
+
+It writes no configuration files of its own. Everything is handed to the
+part of Home Assistant that owns it, the way the UI does: the config API of
+the automation and script editors, the commands of the Helpers and
+Dashboards pages, config flows and the Marketplace. What you make through
+the API is validated by Home Assistant, live at once and editable in the UI.
 
 The integration also serves a built-in [MCP server](#mcp-server) that exposes
 every endpoint below as a tool for MCP-capable agents, with no separate
@@ -19,10 +25,10 @@ process to run.
 
 ## Features
 
-- Full CRUD, list and trigger for automations, written to `automations.yaml`
-  exactly as the Home Assistant UI does
-- Helpers (`input_*`), template entities, `history_stats` sensors and notify
-  groups, managed in a single package file
+- Create, edit, delete and trigger automations, and create, edit and delete
+  scripts, saved exactly as their editors in the UI save them
+- Helpers (`input_*`), template entities and `history_stats` sensors as
+  ordinary UI helpers
 - Storage-mode Lovelace dashboards: dashboards, views and cards
 - Entity, device and config-entry registries, including reload, enable,
   disable and remove
@@ -73,7 +79,7 @@ All paths are relative to `http://<home-assistant>:8123`.
 | `GET` | `/api/automation_api/automations` | List automations |
 | `GET` | `/api/automation_api/automations?id=<id>` | Get one automation (live state) |
 | `POST` | `/api/automation_api/automations` | Create or update (`{id, name, trigger, action, condition?, description?, mode?}`) |
-| `DELETE` | `/api/automation_api/automations?id=<id>` | Delete |
+| `DELETE` | `/api/automation_api/automations?id=<id>` | Delete; `404` if there is none |
 | `POST` | `/api/automation_api/trigger` | Run the actions now, skipping conditions (`{"id": "<id>"}`) |
 | `GET` | `/api/automation_api/automations_yaml?id=<id>` | Raw YAML; omit `id` for the whole file |
 | `GET` | `/api/automation_api/areas` | List areas |
@@ -93,37 +99,65 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
   http://ha:8123/api/automation_api/trigger -d '{"id":"example"}'
 ```
 
-### Managed configuration (packages)
+Automations are saved through the config API of Home Assistant's automation
+editor, with the access token of the request: Home Assistant validates the
+config, stores it, reloads that automation and, on delete, removes its
+entity. An invalid config is answered with `400` and Home Assistant's
+message; nothing is stored.
 
-Helpers, template entities, `history_stats` sensors and notify groups live in
-one package file, `<config>/packages/automation_api.yaml`. This needs a
-one-time addition to `configuration.yaml` and one restart:
-
-```yaml
-homeassistant:
-  packages: !include_dir_named packages
-```
-
-After that, each endpoint reloads the affected domain itself. The package file
-is owned by the integration; edit it through the API, not by hand.
+### Scripts
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/automation_api/helpers/{domain}` | List helpers of a domain |
-| `GET` `PUT` `DELETE` | `/api/automation_api/helpers/{domain}/{id}` | Read, upsert (body: full config) or delete a helper |
-| `GET` | `/api/automation_api/template/{type}` | List template entities of a type |
-| `GET` `PUT` `DELETE` | `/api/automation_api/template/{type}/{name}` | Read, upsert or delete a template entity |
-| `GET` | `/api/automation_api/history_stats` | List `history_stats` sensors |
-| `GET` `PUT` `DELETE` | `/api/automation_api/history_stats/{name}` | Read, upsert or delete; takes effect after a restart |
-| `GET` | `/api/automation_api/notify_group` | List notify groups |
-| `GET` `PUT` `DELETE` | `/api/automation_api/notify_group/{name}` | Read, upsert (`{"services": [...]}`) or delete; takes effect after a restart |
-| `GET` `PUT` | `/api/automation_api/package` | Read or overwrite the whole package |
+| `GET` `PUT` `DELETE` | `/api/automation_api/scripts/{id}` | Read, create or replace (body: the script config) or delete a script |
+
+`{id}` becomes the entity id `script.<id>`. The body is what the script
+editor stores, for example `{"alias": "...", "sequence": [...], "mode":
+"single", "fields": {...}}`. Scripts go through the config API of the script
+editor, like automations.
+
+### Helpers
+
+Helpers are ordinary UI helpers, as made under *Settings → Devices & services
+→ Helpers*: live at once, without a restart, and editable in the UI.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` `POST` | `/api/automation_api/helpers/{domain}` | List the helpers of a domain, or create one (body: full config with `name`) |
+| `GET` `PUT` `DELETE` | `/api/automation_api/helpers/{domain}/{id}` | Read, replace the config of, or delete a helper |
+| `GET` `POST` | `/api/automation_api/template/{type}` | List the template entities of a type, or create one (body: the fields of the helper's form, with `name`) |
+| `GET` `PUT` `DELETE` | `/api/automation_api/template/{type}/{entry_id}` | Read, change the options of, or delete a template entity |
+| `GET` `POST` | `/api/automation_api/history_stats` | List `history_stats` sensors, or create one |
+| `GET` `PUT` `DELETE` | `/api/automation_api/history_stats/{entry_id}` | Read, change the options of, or delete a `history_stats` sensor |
 | `POST` | `/api/automation_api/reload` | `{"domains": [...]}`, or an empty body for `homeassistant.reload_all` |
 | `POST` | `/api/automation_api/restart` | Restart Home Assistant |
 
-Helper domains: `input_boolean`, `input_datetime`, `input_number`,
-`input_select`, `input_text`, `input_button`. Template types: `sensor`,
-`binary_sensor`, `switch`, `button`, `number`, `select`.
+**`input_*` helpers** (`input_boolean`, `input_button`, `input_datetime`,
+`input_number`, `input_select`, `input_text`) are created, changed and
+deleted with the WebSocket commands of their integration, sent with the
+access token of the request. Home Assistant derives the id of a new helper,
+and its entity id, from `name`; the answer holds both.
+
+**Template entities and `history_stats` sensors** are config entries, made
+with the config flow of their integration and changed with its options flow,
+as the UI does. They are addressed by `entry_id`; the answer to a create
+holds it, with the entities made. Only what the helper's form offers is
+accepted, so a template entity has no attributes, icon template or trigger;
+a field the form does not have is refused and nothing is created. A change
+replaces the options the form holds: optional fields left out are cleared,
+and `name` can't be changed there. Any type the Template helper offers
+works (`sensor`, `binary_sensor`, `switch`, `button`, `number`, `select`,
+...).
+
+Helpers, template entities and sensors defined in YAML are not listed and
+can't be changed here.
+
+Other helpers that are config entries, such as groups (a notify group too)
+and `statistics` sensors, can be made with the [config flow
+endpoints](#adding-integrations-config-flows). A notify group made that way
+groups notify entities and passes on a message and a title only. For a
+group that also passes `data` on (channels, tags, actions), make a script
+with `fields` that calls each notify service.
 
 ### Lovelace dashboards
 
@@ -305,13 +339,27 @@ at a glance:
 }
 ```
 
-## WebSocket API and services
+## Upgrading from 1.x
 
-Commands `automation_api/create`, `automation_api/delete` and
-`automation_api/test`, with the same payloads as the REST endpoints. The same
-three actions exist as services (`automation_api.create_automation`,
-`automation_api.delete_automation`, `automation_api.test_automation`) for use
-in scripts and automations.
+Version 2.0.0 no longer writes YAML. If you used an earlier version:
+
+- **The package file** `<config>/packages/automation_api.yaml` is no longer
+  read or written. Home Assistant keeps loading it, so what is in it keeps
+  working; it is yours to edit or to move into the UI. The endpoints and
+  tools for the whole package (`/package`, `get_managed_package`,
+  `overwrite_managed_package`) and for notify groups (`/notify_group`,
+  `*_notify_group`) are gone.
+- **Helpers** are now UI helpers: create with `POST
+  /helpers/{domain}`, and the id comes from `name`. `PUT
+  /helpers/{domain}/{id}` only changes an existing UI helper.
+- **Template entities and `history_stats` sensors** are addressed by
+  `entry_id` instead of name, and take the fields of the helper's form.
+- **The services** `automation_api.create_automation`,
+  `delete_automation` and `test_automation`, and the WebSocket commands
+  `automation_api/create`, `delete` and `test`, are gone. Use the REST
+  endpoints or the MCP tools; to run an automation from a script, use
+  `automation.trigger`.
+- **Deleting an automation** that does not exist now answers `404`.
 
 ## MCP server
 
@@ -349,9 +397,9 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Control devices | `call_service` | Assist intents | Yes |
 | REST API besides MCP | Yes | No | No |
 | Automations | Create, edit, delete, trigger | No | Yes |
-| Scripts and scenes | No | No | Yes |
-| Helpers | `input_*` in a package file | No | Yes, as UI helpers |
-| Template entities, `history_stats`, notify groups | Yes, in a package file | No | Template helpers |
+| Scripts and scenes | Scripts | No | Yes |
+| Helpers | `input_*`, as UI helpers | No | Yes, as UI helpers |
+| Template entities, `history_stats` | Yes, as UI helpers | No | Template helpers |
 | Dashboards | Dashboards, views and single cards | No | Yes |
 | Entity and device registry | Yes | No | Yes |
 | Add integrations (config flows) | Yes | No | Yes |
@@ -362,17 +410,23 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs, plus logs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
 | Safeguards | Admin only, HACS opt-in, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 72 | Depends on Assist | 86 |
+| Tools | 69 | Depends on Assist | 86 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,
-CI) or YAML-managed helpers and template entities next to MCP.
+CI) next to MCP.
 
 ## Notes
 
-Writes go to `automations.yaml` and the package file, followed by a reload of
-the affected domain. Every mutation is logged to `<config>/automation_api.log`.
-All payloads are validated before anything is written.
+The integration writes one file: its own action log,
+`<config>/automation_api.log`, with a line for every change it was asked to
+make. It reads `automations.yaml` for the raw YAML endpoint and writes no
+configuration; see the top of this page.
+
+Several endpoints act as the caller: automations, scripts, `input_*`
+helpers, creating and changing dashboards, and the store. They connect to
+Home Assistant's own API with the access token of the request, so that token
+has to arrive as `Authorization: Bearer`.
 
 ## License
 

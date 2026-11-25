@@ -17,9 +17,10 @@ from homeassistant.components.persistent_notification.helpers import (
 from homeassistant.util.yaml import load_yaml
 
 from .const import DOMAIN, LOG_FILE
-from .storage import create_or_update, delete as delete_automation, reload_automations
-from .utils import log
-from . import package
+from .utils import log, reload_all, reload_domain, restart
+from . import config_api
+from . import helper_entries
+from . import helpers as helpers_mod
 from . import lovelace as lovelace_mod
 from . import registry as registry_mod
 from . import history as history_mod
@@ -102,8 +103,23 @@ class AutomationApiView(HomeAssistantView):
             return self.json({"error": f"invalid payload: {e}"}, status_code=400)
 
         await log(hass, f"HTTP create/update id={data.get('id')}")
-        await create_or_update(hass, data)
-        await reload_automations(hass, data.get("id"))
+        try:
+            await config_api.save(
+                hass,
+                _bearer(request),
+                "automation",
+                data["id"],
+                {
+                    "alias": data["name"],
+                    "description": data["description"],
+                    "trigger": data["trigger"],
+                    "condition": data["condition"],
+                    "action": data["action"],
+                    "mode": data["mode"],
+                },
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
         return self.json({"status": "ok", "id": data.get("id")})
 
     async def delete(self, request):
@@ -115,8 +131,14 @@ class AutomationApiView(HomeAssistantView):
             return self.json({"error": "missing id"}, status_code=400)
 
         await log(hass, f"HTTP delete id={automation_id}")
-        await delete_automation(hass, automation_id)
-        await reload_automations(hass, automation_id)
+        try:
+            removed = await config_api.delete(
+                hass, _bearer(request), "automation", automation_id
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        if not removed:
+            return self.json({"error": "not found"}, status_code=404)
         return self.json({"status": "ok", "id": automation_id})
 
 
@@ -269,16 +291,22 @@ class _AuthedView(HomeAssistantView):
         return data, None
 
 
-class PackageView(_AuthedView):
-    url = "/api/automation_api/package"
-    name = "api:automation_api:package"
+class ScriptItemView(_AuthedView):
+    url = "/api/automation_api/scripts/{script_id}"
+    name = "api:automation_api:script"
 
-    async def get(self, request):
+    async def get(self, request, script_id):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        return self.json(await package.read_package(hass))
+        try:
+            config = await config_api.get(hass, _bearer(request), "script", script_id)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        if config is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json(config)
 
-    async def put(self, request):
+    async def put(self, request, script_id):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
         data, err = await self._json_body(request)
@@ -286,10 +314,28 @@ class PackageView(_AuthedView):
             return err
         if not isinstance(data, dict):
             return self.json({"error": "body must be a dict"}, status_code=400)
-        await log(hass, "HTTP overwrite package")
-        await package.overwrite_package(hass, data)
-        reloaded = await package.reload_all(hass)
-        return self.json({"status": "ok", "reloaded_all": reloaded})
+        await log(hass, f"HTTP create/update script {script_id}")
+        try:
+            await config_api.save(hass, _bearer(request), "script", script_id, data)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json(
+            {"status": "ok", "id": script_id, "entity_id": f"script.{script_id}"}
+        )
+
+    async def delete(self, request, script_id):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        await log(hass, f"HTTP delete script {script_id}")
+        try:
+            removed = await config_api.delete(
+                hass, _bearer(request), "script", script_id
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        if not removed:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"status": "ok", "id": script_id})
 
 
 class HelpersListView(_AuthedView):
@@ -299,9 +345,24 @@ class HelpersListView(_AuthedView):
     async def get(self, request, domain):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        if domain not in package.HELPER_DOMAINS:
-            return self.json({"error": f"unsupported domain: {domain}"}, status_code=400)
-        return self.json({"items": await package.list_helpers(hass, domain)})
+        try:
+            items = await helpers_mod.list_helpers(hass, _bearer(request), domain)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"items": items})
+
+    async def post(self, request, domain):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        await log(hass, f"HTTP create helper {domain}")
+        try:
+            item = await helpers_mod.create_helper(hass, _bearer(request), domain, data)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"status": "ok", "domain": domain, "helper": item})
 
 
 class HelperItemView(_AuthedView):
@@ -311,9 +372,12 @@ class HelperItemView(_AuthedView):
     async def get(self, request, domain, helper_id):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        if domain not in package.HELPER_DOMAINS:
-            return self.json({"error": f"unsupported domain: {domain}"}, status_code=400)
-        item = await package.get_helper(hass, domain, helper_id)
+        try:
+            item = await helpers_mod.get_helper(
+                hass, _bearer(request), domain, helper_id
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
         if item is None:
             return self.json({"error": "not found"}, status_code=404)
         return self.json(item)
@@ -321,203 +385,138 @@ class HelperItemView(_AuthedView):
     async def put(self, request, domain, helper_id):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        if domain not in package.HELPER_DOMAINS:
-            return self.json({"error": f"unsupported domain: {domain}"}, status_code=400)
         data, err = await self._json_body(request)
         if err:
             return err
-        if not isinstance(data, dict):
-            return self.json({"error": "body must be a dict"}, status_code=400)
-        await log(hass, f"HTTP upsert helper {domain}/{helper_id}")
+        await log(hass, f"HTTP update helper {domain}/{helper_id}")
         try:
-            await package.upsert_helper(hass, domain, helper_id, data)
+            item = await helpers_mod.update_helper(
+                hass, _bearer(request), domain, helper_id, data
+            )
         except ValueError as e:
             return self.json({"error": str(e)}, status_code=400)
-        reloaded = await package.reload_domain(hass, domain)
-        return self.json(
-            {"status": "ok", "domain": domain, "id": helper_id, "reloaded": reloaded}
-        )
+        if item is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"status": "ok", "domain": domain, "helper": item})
 
     async def delete(self, request, domain, helper_id):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        if domain not in package.HELPER_DOMAINS:
-            return self.json({"error": f"unsupported domain: {domain}"}, status_code=400)
         await log(hass, f"HTTP delete helper {domain}/{helper_id}")
-        removed = await package.delete_helper(hass, domain, helper_id)
+        try:
+            removed = await helpers_mod.delete_helper(
+                hass, _bearer(request), domain, helper_id
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
         if not removed:
             return self.json({"error": "not found"}, status_code=404)
-        reloaded = await package.reload_domain(hass, domain)
-        return self.json(
-            {"status": "ok", "domain": domain, "id": helper_id, "reloaded": reloaded}
-        )
+        return self.json({"status": "ok", "domain": domain, "id": helper_id})
 
 
-class TemplateListView(_AuthedView):
-    url = "/api/automation_api/template/{ttype}"
-    name = "api:automation_api:template:list"
+class _HelperEntriesView(_AuthedView):
+    """Helpers kept as config entries of `domain`: list and create."""
 
-    async def get(self, request, ttype):
+    domain: str
+
+    def _matches(self, item: dict, kind: str | None) -> bool:
+        return True
+
+    async def get(self, request, kind=None):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        if ttype not in package.TEMPLATE_TYPES:
-            return self.json({"error": f"unsupported template type: {ttype}"}, status_code=400)
-        return self.json({"items": await package.list_templates(hass, ttype)})
+        items = [
+            item
+            for item in helper_entries.list_entries(hass, self.domain)
+            if self._matches(item, kind)
+        ]
+        return self.json({"items": items})
 
-
-class TemplateItemView(_AuthedView):
-    url = "/api/automation_api/template/{ttype}/{name}"
-    name = "api:automation_api:template:item"
-
-    async def get(self, request, ttype, name):
+    async def post(self, request, kind=None):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        if ttype not in package.TEMPLATE_TYPES:
-            return self.json({"error": f"unsupported template type: {ttype}"}, status_code=400)
-        item = await package.get_template(hass, ttype, name)
-        if item is None:
-            return self.json({"error": "not found"}, status_code=404)
-        return self.json(item)
-
-    async def put(self, request, ttype, name):
-        hass: HomeAssistant = request.app["hass"]
-        _require_admin(request)
-        if ttype not in package.TEMPLATE_TYPES:
-            return self.json({"error": f"unsupported template type: {ttype}"}, status_code=400)
         data, err = await self._json_body(request)
         if err:
             return err
-        if not isinstance(data, dict):
-            return self.json({"error": "body must be a dict"}, status_code=400)
-        await log(hass, f"HTTP upsert template {ttype}/{name}")
+        await log(hass, f"HTTP create {self.domain} helper {kind or ''}".rstrip())
         try:
-            await package.upsert_template(hass, ttype, name, data)
+            item = await helper_entries.create_entry(hass, self.domain, data, kind)
         except ValueError as e:
             return self.json({"error": str(e)}, status_code=400)
-        reloaded = await package.reload_domain(hass, "template")
-        return self.json(
-            {"status": "ok", "type": ttype, "name": name, "reloaded": reloaded}
-        )
+        return self.json({"status": "ok", **item})
 
-    async def delete(self, request, ttype, name):
+
+class _HelperEntryView(_AuthedView):
+    """One helper kept as a config entry of `domain`."""
+
+    domain: str
+
+    def _matches(self, item: dict, kind: str | None) -> bool:
+        return True
+
+    async def get(self, request, entry_id, kind=None):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        if ttype not in package.TEMPLATE_TYPES:
-            return self.json({"error": f"unsupported template type: {ttype}"}, status_code=400)
-        await log(hass, f"HTTP delete template {ttype}/{name}")
-        removed = await package.delete_template(hass, ttype, name)
-        if not removed:
+        item = helper_entries.get_entry(hass, self.domain, entry_id)
+        if item is None or not self._matches(item, kind):
             return self.json({"error": "not found"}, status_code=404)
-        reloaded = await package.reload_domain(hass, "template")
-        return self.json(
-            {"status": "ok", "type": ttype, "name": name, "reloaded": reloaded}
-        )
+        return self.json(item)
+
+    async def put(self, request, entry_id, kind=None):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        item = helper_entries.get_entry(hass, self.domain, entry_id)
+        if item is None or not self._matches(item, kind):
+            return self.json({"error": "not found"}, status_code=404)
+        await log(hass, f"HTTP update {self.domain} helper {entry_id}")
+        try:
+            item = await helper_entries.update_entry(hass, self.domain, entry_id, data)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"status": "ok", **item})
+
+    async def delete(self, request, entry_id, kind=None):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        item = helper_entries.get_entry(hass, self.domain, entry_id)
+        if item is None or not self._matches(item, kind):
+            return self.json({"error": "not found"}, status_code=404)
+        await log(hass, f"HTTP delete {self.domain} helper {entry_id}")
+        await helper_entries.delete_entry(hass, self.domain, entry_id)
+        return self.json({"status": "ok", "entry_id": entry_id})
 
 
-class HistoryStatsListView(_AuthedView):
+def _is_template_type(item: dict, ttype: str | None) -> bool:
+    return item["config"].get("template_type") == ttype
+
+
+class TemplateListView(_HelperEntriesView):
+    url = "/api/automation_api/template/{kind}"
+    name = "api:automation_api:template:list"
+    domain = "template"
+    _matches = staticmethod(_is_template_type)
+
+
+class TemplateItemView(_HelperEntryView):
+    url = "/api/automation_api/template/{kind}/{entry_id}"
+    name = "api:automation_api:template:item"
+    domain = "template"
+    _matches = staticmethod(_is_template_type)
+
+
+class HistoryStatsListView(_HelperEntriesView):
     url = "/api/automation_api/history_stats"
     name = "api:automation_api:history_stats:list"
-
-    async def get(self, request):
-        hass: HomeAssistant = request.app["hass"]
-        _require_admin(request)
-        return self.json({"items": await package.list_history_stats(hass)})
+    domain = "history_stats"
 
 
-class HistoryStatsItemView(_AuthedView):
-    url = "/api/automation_api/history_stats/{name}"
+class HistoryStatsItemView(_HelperEntryView):
+    url = "/api/automation_api/history_stats/{entry_id}"
     name = "api:automation_api:history_stats:item"
-
-    async def get(self, request, name):
-        hass: HomeAssistant = request.app["hass"]
-        _require_admin(request)
-        item = await package.get_history_stats(hass, name)
-        if item is None:
-            return self.json({"error": "not found"}, status_code=404)
-        return self.json(item)
-
-    async def put(self, request, name):
-        hass: HomeAssistant = request.app["hass"]
-        _require_admin(request)
-        data, err = await self._json_body(request)
-        if err:
-            return err
-        if not isinstance(data, dict):
-            return self.json({"error": "body must be a dict"}, status_code=400)
-        await log(hass, f"HTTP upsert history_stats {name}")
-        try:
-            await package.upsert_history_stats(hass, name, data)
-        except ValueError as e:
-            return self.json({"error": str(e)}, status_code=400)
-        return self.json(
-            {"status": "ok", "name": name, "restart_required": True}
-        )
-
-    async def delete(self, request, name):
-        hass: HomeAssistant = request.app["hass"]
-        _require_admin(request)
-        await log(hass, f"HTTP delete history_stats {name}")
-        removed = await package.delete_history_stats(hass, name)
-        if not removed:
-            return self.json({"error": "not found"}, status_code=404)
-        return self.json(
-            {"status": "ok", "name": name, "restart_required": True}
-        )
-
-
-class NotifyGroupListView(_AuthedView):
-    url = "/api/automation_api/notify_group"
-    name = "api:automation_api:notify_group:list"
-
-    async def get(self, request):
-        hass: HomeAssistant = request.app["hass"]
-        _require_admin(request)
-        return self.json({"items": await package.list_notify_groups(hass)})
-
-
-class NotifyGroupItemView(_AuthedView):
-    url = "/api/automation_api/notify_group/{name}"
-    name = "api:automation_api:notify_group:item"
-
-    async def get(self, request, name):
-        hass: HomeAssistant = request.app["hass"]
-        _require_admin(request)
-        item = await package.get_notify_group(hass, name)
-        if item is None:
-            return self.json({"error": "not found"}, status_code=404)
-        return self.json(item)
-
-    async def put(self, request, name):
-        hass: HomeAssistant = request.app["hass"]
-        _require_admin(request)
-        data, err = await self._json_body(request)
-        if err:
-            return err
-        if not isinstance(data, dict):
-            return self.json({"error": "body must be a dict"}, status_code=400)
-        services = data.get("services")
-        if services is None:
-            return self.json({"error": "missing 'services'"}, status_code=400)
-        extra = {k: v for k, v in data.items() if k != "services"}
-        await log(hass, f"HTTP upsert notify_group {name}")
-        try:
-            await package.upsert_notify_group(hass, name, services, extra=extra)
-        except ValueError as e:
-            return self.json({"error": str(e)}, status_code=400)
-        return self.json(
-            {"status": "ok", "name": name, "restart_required": True}
-        )
-
-    async def delete(self, request, name):
-        hass: HomeAssistant = request.app["hass"]
-        _require_admin(request)
-        await log(hass, f"HTTP delete notify_group {name}")
-        removed = await package.delete_notify_group(hass, name)
-        if not removed:
-            return self.json({"error": "not found"}, status_code=404)
-        return self.json(
-            {"status": "ok", "name": name, "restart_required": True}
-        )
+    domain = "history_stats"
 
 
 class ReloadView(_AuthedView):
@@ -537,9 +536,9 @@ class ReloadView(_AuthedView):
                 return self.json({"error": "'domains' must be a list"}, status_code=400)
             results = {}
             for d in domains:
-                results[d] = await package.reload_domain(hass, d)
+                results[d] = await reload_domain(hass, d)
             return self.json({"status": "ok", "results": results})
-        ok = await package.reload_all(hass)
+        ok = await reload_all(hass)
         return self.json({"status": "ok" if ok else "failed", "method": "reload_all"})
 
 
@@ -551,7 +550,7 @@ class RestartView(_AuthedView):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
         await log(hass, "HTTP restart requested")
-        hass.async_create_task(package.restart(hass))
+        hass.async_create_task(restart(hass))
         return self.json({"status": "scheduled"})
 
 
@@ -1494,15 +1493,13 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiEntitiesView)
     hass.http.register_view(AutomationApiYamlView)
     hass.http.register_view(AutomationApiLogView)
-    hass.http.register_view(PackageView)
+    hass.http.register_view(ScriptItemView)
     hass.http.register_view(HelpersListView)
     hass.http.register_view(HelperItemView)
     hass.http.register_view(TemplateListView)
     hass.http.register_view(TemplateItemView)
     hass.http.register_view(HistoryStatsListView)
     hass.http.register_view(HistoryStatsItemView)
-    hass.http.register_view(NotifyGroupListView)
-    hass.http.register_view(NotifyGroupItemView)
     hass.http.register_view(ReloadView)
     hass.http.register_view(RestartView)
     hass.http.register_view(LovelaceDashboardsView)

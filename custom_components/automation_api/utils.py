@@ -8,18 +8,6 @@ from homeassistant.core import HomeAssistant
 from .const import LOG_FILE
 
 
-def normalize_payload(data: dict) -> dict:
-    return {
-        "id": data.get("automation_id") or data.get("id"),
-        "name": data.get("name") or "(unnamed)",
-        "description": data.get("description", ""),
-        "trigger": data.get("trigger", []),
-        "condition": data.get("condition", []),
-        "action": data.get("action", []),
-        "mode": data.get("mode", "single"),
-    }
-
-
 def _append_log(path: str, line: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
@@ -31,3 +19,42 @@ async def log(hass: HomeAssistant, message: str, level: str = "warning") -> None
     line = f"{timestamp} [{level}] {message}\n"
     path = hass.config.path(LOG_FILE)
     await hass.async_add_executor_job(_append_log, path, line)
+
+
+# Domains whose YAML config can be reloaded at runtime via <domain>.reload.
+RELOADABLE_DOMAINS: set[str] = {
+    "automation",
+    "input_boolean",
+    "input_button",
+    "input_datetime",
+    "input_number",
+    "input_select",
+    "input_text",
+    "scene",
+    "script",
+    "template",
+}
+
+
+async def reload_domain(hass: HomeAssistant, domain: str) -> bool:
+    if domain not in RELOADABLE_DOMAINS:
+        return False
+    try:
+        await hass.services.async_call(domain, "reload", {}, blocking=True)
+        return True
+    except Exception:
+        return False
+
+
+async def reload_all(hass: HomeAssistant) -> bool:
+    try:
+        await hass.services.async_call(
+            "homeassistant", "reload_all", {}, blocking=True
+        )
+        return True
+    except Exception:
+        return False
+
+
+async def restart(hass: HomeAssistant) -> None:
+    await hass.services.async_call("homeassistant", "restart", {}, blocking=True)

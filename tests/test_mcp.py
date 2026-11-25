@@ -8,6 +8,7 @@ the REST views — not Home Assistant itself.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 import importlib.abc
 import importlib.machinery
 import json
@@ -60,11 +61,15 @@ homeassistant.helpers.json.json_dumps = json.dumps
 from custom_components.automation_api import mcp  # noqa: E402
 
 
+HASS = MagicMock()  # the hass every request gets; tests hang fakes on it
+
+
 def rpc(method, params=None, *, admin=True, notification=False):
     msg = {"jsonrpc": "2.0", "method": method, "params": params or {}}
     if not notification:
         msg["id"] = 1
     request = MagicMock()
+    request.app = {"hass": HASS}
     request.json = AsyncMock(return_value=msg)
     request.__getitem__.return_value = SimpleNamespace(is_admin=admin, id="user-1")
     request.headers = {"Authorization": "Bearer t0ken"}
@@ -72,8 +77,8 @@ def rpc(method, params=None, *, admin=True, notification=False):
     return json.loads(resp.body) if isinstance(resp, SimpleNamespace) else resp
 
 
-def call(name, **arguments):
-    result = rpc("tools/call", {"name": name, "arguments": arguments})["result"]
+def call(tool, /, **arguments):
+    result = rpc("tools/call", {"name": tool, "arguments": arguments})["result"]
     return result["isError"], result["content"][0]["text"]
 
 
@@ -93,7 +98,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 72, len(tools)
+    assert len(tools) == 69, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -101,35 +106,319 @@ def main():
     schema = tools["replace_dashboard_view"]["inputSchema"]
     assert schema["properties"]["view_index"] == {"type": "integer"}
     assert schema["properties"]["view"] == {"type": "object"}
-    assert tools["upsert_notify_group"]["inputSchema"]["properties"]["services"] == {
-        "type": "array"
-    }
+    schema = tools["upsert_helper"]["inputSchema"]
+    assert schema["required"] == ["domain", "config"], schema
+    assert schema["properties"]["helper_id"] == {"type": "string"}
+    assert schema["properties"]["config"] == {"type": "object"}
+    assert tools["list_entities"]["inputSchema"]["properties"]["domain"] == {"type": "string"}
+    assert not {"get_managed_package", "upsert_notify_group"} & tools.keys()
     assert tools["list_areas"]["description"].startswith("List every area")
 
-    # tools/call goes through the REST view: path args, JSON result
-    mcp.views.package.list_helpers = AsyncMock(return_value=[{"id": "x"}])
+    mcp.views.log = AsyncMock()
+
+    # input helpers are ordinary UI helpers: made, changed and removed through
+    # the websocket commands of their integration, as the caller
+    from custom_components.automation_api import helpers
+
+    stored, helper_sent = {}, []
+
+    @asynccontextmanager
+    async def fake_helpers(hass, token, error):
+        async def command(type_, **fields):
+            helper_sent.append((token, type_, dict(fields)))
+            domain, command = type_.split("/")
+            items = stored.setdefault(domain, {})
+            if command == "list":
+                return list(items.values())
+            if command == "create":
+                if "name" not in fields:
+                    raise error("required key not provided @ data['name'] (invalid_format)")
+                item = {**fields, "id": fields["name"].lower().replace(" ", "_")}
+            else:
+                item = {**fields, "id": fields.pop(f"{domain}_id")}
+                item.pop(f"{domain}_id")
+                if command == "delete":
+                    del items[item["id"]]
+                    return None
+            items[item["id"]] = item
+            return item
+
+        yield command
+
+    helpers._connect = fake_helpers
+    helpers.er = SimpleNamespace(
+        async_get=lambda hass: SimpleNamespace(
+            async_get_entity_id=lambda domain, platform, unique_id: f"{domain}.{unique_id}"
+        )
+    )
+
+    # tools/call goes through the REST view: path args, body, JSON result
+    is_error, text = call("upsert_helper", domain="input_boolean", config={"name": "Bell On"})
+    assert not is_error, text
+    bell = {"name": "Bell On", "id": "bell_on", "entity_id": "input_boolean.bell_on"}
+    assert json.loads(text) == {"status": "ok", "domain": "input_boolean", "helper": bell}
+    assert helper_sent[-1] == ("t0ken", "input_boolean/create", {"name": "Bell On"})
     assert call("list_helpers", domain="input_boolean") == (
         False,
-        json.dumps({"items": [{"id": "x"}]}),
+        json.dumps({"items": {"bell_on": bell}}),
     )
+    assert json.loads(call("get_helper", domain="input_boolean", helper_id="bell_on")[1]) == bell
 
     # a 4xx from the view becomes a tool error
     is_error, text = call("list_helpers", domain="bogus")
-    assert is_error and "HTTP 400" in text and "unsupported domain" in text
+    assert is_error and "HTTP 400" in text and "unsupported helper domain" in text
+    is_error, text = call("upsert_helper", domain="input_boolean", config={"icon": "mdi:bell"})
+    assert is_error and "HTTP 400" in text and "required key" in text, text
+    is_error, text = call("upsert_helper", domain="input_boolean", config={"name": "n", "id": "x"})
+    assert is_error and "leave out 'id'" in text, text
+    is_error, text = call("upsert_helper", domain="input_boolean", config={"name": "n", "type": "x"})
+    assert is_error and "['type'] are not fields" in text, text
 
-    # request body reaches the view; path + body both passed
-    mcp.views.package.upsert_helper = AsyncMock()
-    mcp.views.package.reload_domain = AsyncMock(return_value=True)
-    mcp.views.log = AsyncMock()
+    # with an id the helper gets a full new config; one read back from the
+    # list may be sent as it came
     is_error, text = call(
-        "upsert_helper", domain="input_boolean", helper_id="x", config={"name": "X"}
+        "upsert_helper", domain="input_boolean", helper_id="bell_on",
+        config={**bell, "name": "Bell", "icon": "mdi:bell"},
+    )
+    assert not is_error and json.loads(text)["helper"]["icon"] == "mdi:bell", text
+    assert helper_sent[-1][1:] == (
+        "input_boolean/update",
+        {"input_boolean_id": "bell_on", "name": "Bell", "icon": "mdi:bell"},
+    ), helper_sent[-1]
+    is_error, text = call("upsert_helper", domain="input_boolean", helper_id="nope", config={"name": "n"})
+    assert is_error and "HTTP 404" in text, text
+    assert call("delete_helper", domain="input_boolean", helper_id="bell_on")[0] is False
+    assert stored["input_boolean"] == {}
+    is_error, text = call("delete_helper", domain="input_boolean", helper_id="bell_on")
+    assert is_error and "HTTP 404" in text, text
+
+    # automations and scripts are saved through the config API of their
+    # editors, as the caller; this integration writes no YAML
+    from custom_components.automation_api import config_api
+
+    saved, requests = {"automation": {}, "script": {}}, []
+
+    async def fake_request(hass, token, error, method, path, body=None):
+        requests.append((token, method, path, body))
+        domain, key = path.split("/")[3], path.split("/")[5]
+        items = saved[domain]
+        if method == "POST":
+            if body.get("mode") == "bogus":
+                return 400, {"message": "Message malformed: bad mode"}
+            items[key] = body
+        elif key not in items:
+            return (400 if method == "DELETE" else 404), {"message": "Resource not found"}
+        elif method == "GET":
+            return 200, items[key]
+        else:
+            del items[key]
+        return 200, {"result": "ok"}
+
+    config_api._request = fake_request
+    # voluptuous is a stub here: stand in for the defaults of the schema
+    mcp.views.CREATE_SCHEMA = lambda data: {"description": "", "condition": [], "mode": "single", **data}
+
+    is_error, text = call(
+        "create_or_update_automation", id="a1", name="A",
+        trigger=[{"trigger": "sun", "event": "sunset"}], action=[{"action": "light.turn_on"}],
+    )
+    assert not is_error and json.loads(text) == {"status": "ok", "id": "a1"}, text
+    assert requests[-1] == (
+        "t0ken",
+        "POST",
+        "/api/config/automation/config/a1",
+        {
+            "alias": "A", "description": "",
+            "trigger": [{"trigger": "sun", "event": "sunset"}], "condition": [],
+            "action": [{"action": "light.turn_on"}], "mode": "single",
+        },
+    ), requests[-1]
+    is_error, text = call(
+        "create_or_update_automation", id="a2", name="B", trigger=[], action=[], mode="bogus"
+    )
+    assert is_error and "Message malformed: bad mode (HTTP 400)" in text, text
+    assert call("delete_automation", automation_id="a1")[0] is False and not saved["automation"]
+    assert [r[1] for r in requests[-2:]] == ["GET", "DELETE"], requests[-2:]
+    is_error, text = call("delete_automation", automation_id="a1")
+    assert is_error and "HTTP 404" in text, text
+
+    script = {"alias": "S", "sequence": [{"action": "light.turn_off"}]}
+    is_error, text = call("create_or_update_script", script_id="s1", config=script)
+    assert not is_error and json.loads(text)["entity_id"] == "script.s1", text
+    assert requests[-1] == ("t0ken", "POST", "/api/config/script/config/s1", script)
+    assert json.loads(call("get_script", script_id="s1")[1]) == script
+    is_error, text = call("get_script", script_id="nope")
+    assert is_error and "HTTP 404" in text, text
+    assert call("delete_script", script_id="s1")[0] is False and not saved["script"]
+    asyncio.run(config_api.get(HASS, "t", "script", "a/b"))
+    assert requests[-1][2] == "/api/config/script/config/a%2Fb", requests[-1]
+
+    # template entities and history_stats sensors are config entries: made
+    # with the config flow of their integration, changed with its options flow
+    from custom_components.automation_api import helper_entries
+
+    class Invalid(Exception):
+        pass
+
+    helper_entries.vol.Invalid = Invalid
+    helper_entries.er = SimpleNamespace(
+        async_get=lambda hass: None,
+        async_entries_for_config_entry=lambda registry, entry_id: [
+            SimpleNamespace(entity_id=f"sensor.of_{entry_id}")
+        ],
+    )
+
+    class Marker:
+        """A key of a schema, as voluptuous wraps it."""
+
+        def __init__(self, schema):
+            self.schema = schema
+
+    def form(*fields, required=()):
+        schema = SimpleNamespace(schema={Marker(f): None for f in fields})
+        return {"type": "form", "data_schema": schema, "required": required}
+
+    # domain -> the steps of its config flow and of its options flow
+    FLOWS = {
+        "template": (
+            [
+                {"type": "menu", "menu_options": ["binary_sensor", "sensor"]},
+                form("name", "state", "unit_of_measurement", required=("name", "state")),
+            ],
+            [form("state", "unit_of_measurement", required=("state",))],
+        ),
+        "history_stats": (
+            [
+                form("name", "entity_id", "type", required=("entity_id",)),
+                form("entity_id", "start", "end", "duration"),
+            ],
+            [form("entity_id", "start", "end", "duration")],
+        ),
+    }
+    entries, aborted = {}, []
+
+    class Flows:
+        """A flow manager that walks the steps above."""
+
+        def __init__(self, options):
+            self.options = options
+
+        def _show(self):
+            if self.at == len(self.steps):
+                if self.options:
+                    self.entry.options = self.data
+                else:
+                    self.entry = SimpleNamespace(
+                        entry_id=f"e{len(entries) + 1}", domain=self.domain,
+                        title=self.data.get("name"), options=self.data,
+                    )
+                    entries[self.entry.entry_id] = self.entry
+                return {"type": "create_entry", "result": self.entry}
+            return {**self.steps[self.at], "flow_id": "f1", "errors": self.errors}
+
+        async def async_init(self, handler, context):
+            self.entry = entries.get(handler)
+            self.domain = self.entry.domain if self.options else handler
+            self.steps = FLOWS[self.domain][self.options]
+            self.at, self.data, self.errors = 0, {}, None
+            if self.options:
+                # an options form replaces its own fields and keeps the rest
+                asked = {marker.schema for marker in self.steps[0]["data_schema"].schema}
+                self.data = {k: v for k, v in self.entry.options.items() if k not in asked}
+            return self._show()
+
+        async def async_configure(self, flow_id, answer):
+            step = self.steps[self.at]
+            if step["type"] == "menu":
+                self.data["template_type"] = answer["next_step_id"]
+            else:
+                if missing := [f for f in step["required"] if f not in answer]:
+                    raise Invalid(f"required key not provided: {missing}")
+                if answer.get("state") == "bad":
+                    self.errors = {"state": "invalid_template"}
+                    return self._show()
+                self.data.update(answer)
+            self.at += 1
+            return self._show()
+
+        def async_abort(self, flow_id):
+            aborted.append(flow_id)
+
+    async def remove(entry_id):
+        del entries[entry_id]
+
+    HASS.config_entries = SimpleNamespace(
+        flow=Flows(False),
+        options=Flows(True),
+        async_entries=lambda domain: [e for e in entries.values() if e.domain == domain],
+        async_get_entry=entries.get,
+        async_remove=remove,
+    )
+
+    is_error, text = call(
+        "upsert_template_entity", template_type="sensor",
+        config={"name": "Days", "state": "{{ 1 }}", "unit_of_measurement": "d"},
     )
     assert not is_error, text
-    assert mcp.views.package.upsert_helper.await_args.args[1:] == (
-        "input_boolean",
-        "x",
-        {"name": "X"},
+    assert json.loads(text) == {
+        "status": "ok", "entry_id": "e1", "title": "Days",
+        "config": {
+            "template_type": "sensor", "name": "Days", "state": "{{ 1 }}",
+            "unit_of_measurement": "d",
+        },
+        "entities": ["sensor.of_e1"],
+    }, text
+    refused = lambda **kw: call("upsert_template_entity", **kw)
+    # what the flow refuses is reported, its flow aborted, nothing left behind
+    is_error, text = refused(template_type="bogus", config={"name": "n", "state": "s"})
+    assert is_error and "type must be one of ['binary_sensor', 'sensor']" in text, text
+    is_error, text = refused(template_type="sensor", config={"name": "n"})
+    assert is_error and "required key not provided: ['state']" in text, text
+    is_error, text = refused(template_type="sensor", config={"name": "n", "state": "bad"})
+    assert is_error and "invalid config" in text and "invalid_template" in text, text
+    assert aborted == ["f1"] * 3, aborted
+    is_error, text = refused(
+        template_type="sensor", config={"name": "n", "state": "s", "attributes": {}}
     )
+    assert is_error and "['attributes'] are not fields" in text, text
+    assert list(entries) == ["e1"], entries
+
+    # a change replaces the options; a field the options form lacks is
+    # refused before anything is saved
+    is_error, text = refused(template_type="sensor", entry_id="e1", config={"state": "{{ 2 }}"})
+    changed = {"template_type": "sensor", "name": "Days", "state": "{{ 2 }}"}
+    assert not is_error and json.loads(text)["config"] == changed, text
+    is_error, text = refused(template_type="sensor", entry_id="e1", config={"name": "X", "state": "s"})
+    assert is_error and "['name'] cannot be changed" in text, text
+    assert entries["e1"].options == changed and len(aborted) == 4
+    is_error, text = refused(template_type="sensor", entry_id="nope", config={"state": "s"})
+    assert is_error and "HTTP 404" in text, text
+    # the type is part of the address
+    is_error, text = refused(template_type="binary_sensor", entry_id="e1", config={"state": "s"})
+    assert is_error and "HTTP 404" in text, text
+    assert len(json.loads(call("list_template_entities", template_type="sensor")[1])["items"]) == 1
+    assert json.loads(call("list_template_entities", template_type="binary_sensor")[1]) == {"items": []}
+
+    # a flow of several forms: each gets the fields it asks for
+    is_error, text = call(
+        "upsert_history_stats_sensor",
+        config={"name": "Rain", "entity_id": "binary_sensor.rain", "type": "time",
+                "end": "{{ now() }}", "duration": {"hours": 2}},
+    )
+    assert not is_error and json.loads(text)["entry_id"] == "e2", text
+    assert entries["e2"].options == {
+        "name": "Rain", "entity_id": "binary_sensor.rain", "type": "time",
+        "end": "{{ now() }}", "duration": {"hours": 2},
+    }, entries["e2"].options
+    assert [i["entry_id"] for i in json.loads(call("list_history_stats_sensors")[1])["items"]] == ["e2"]
+    # an entry of another integration is not a history_stats sensor
+    is_error, text = call("get_history_stats_sensor", entry_id="e1")
+    assert is_error and "HTTP 404" in text, text
+    assert call("delete_history_stats_sensor", entry_id="e2")[0] is False and "e2" not in entries
+    is_error, text = call("delete_history_stats_sensor", entry_id="e2")
+    assert is_error and "HTTP 404" in text, text
+    assert call("delete_template_entity", template_type="sensor", entry_id="e1")[0] is False
+    assert not entries
 
     # query args: None dropped, booleans survive the string round-trip
     mcp.views.registry_mod.list_entities = AsyncMock(return_value=[])
@@ -174,8 +463,6 @@ def main():
     assert done == {"type": "create_entry", "entry_id": "e1", "title": "Met"}, done
 
     # HACS / Marketplace: a WebSocket client of the store, as the caller
-    from contextlib import asynccontextmanager
-
     from custom_components.automation_api import hacs
 
     def row(full_name, installed=False, stars=1, last_updated=None, category="integration"):
@@ -231,10 +518,10 @@ def main():
     # downloads are opt-in, and the store is asked with the caller's token
     assert "disabled" in str(run(hacs.download(fake_hass, "t", "a/b")))
     entry.options["allow_hacs"] = True
-    from custom_components.automation_api import ws_client
+    from custom_components.automation_api import ha_client
 
     async def without_token():
-        async with ws_client.connect(fake_hass, None, hacs.HacsError):
+        async with ha_client.connect(fake_hass, None, hacs.HacsError):
             pass
 
     assert "access token" in str(run(without_token()))
@@ -301,6 +588,9 @@ def main():
     assert "neither" in str(run(hacs.search(fake_hass, "t")))
 
     # the views and tools hand the store the bearer token of the request
+    HASS.config_entries = SimpleNamespace(
+        async_entries=lambda domain: [1] if domain == "marketplace" else []
+    )
     is_error, text = call("hacs_search", query="M/P")
     assert not is_error and json.loads(text)["items"][0]["full_name"] == "M/p", text
     assert tokens[-1] == "t0ken", tokens[-1]

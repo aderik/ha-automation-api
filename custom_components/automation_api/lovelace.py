@@ -8,7 +8,7 @@ its files. The config of a dashboard (views and cards) is read and saved
 through the live dashboard object Lovelace keeps for it. Creating, updating
 and deleting a dashboard goes through Lovelace's own
 ``lovelace/dashboards/*`` WebSocket commands, sent as the caller (see
-``ws_client``), so Lovelace validates the request and registers or removes
+``ha_client``), so Lovelace validates the request and registers or removes
 the panel itself, without a restart.
 
 Key concepts:
@@ -27,7 +27,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
-from .ws_client import connect as _connect
+from .ha_client import connect as _connect
 
 
 DEFAULT_SENTINELS = (None, "", "default")

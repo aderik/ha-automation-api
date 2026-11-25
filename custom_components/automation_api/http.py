@@ -589,6 +589,7 @@ class LovelaceDashboardsView(_AuthedView):
         try:
             created = await lovelace_mod.create_dashboard(
                 hass,
+                _bearer(request),
                 url_path=url_path,
                 title=title,
                 icon=data.get("icon"),
@@ -616,7 +617,9 @@ class LovelaceDashboardItemView(_AuthedView):
             return self.json({"error": "body must be a dict"}, status_code=400)
         await log(hass, f"HTTP update dashboard {url_path}")
         try:
-            updated = await lovelace_mod.update_dashboard(hass, url_path, data)
+            updated = await lovelace_mod.update_dashboard(
+                hass, _bearer(request), url_path, data
+            )
         except ValueError as e:
             return self.json({"error": str(e)}, status_code=400)
         except Exception as e:
@@ -628,7 +631,9 @@ class LovelaceDashboardItemView(_AuthedView):
         _require_admin(request)
         await log(hass, f"HTTP delete dashboard {url_path}")
         try:
-            removed = await lovelace_mod.delete_dashboard(hass, url_path)
+            removed = await lovelace_mod.delete_dashboard(
+                hass, _bearer(request), url_path
+            )
         except ValueError as e:
             return self.json({"error": str(e)}, status_code=400)
         if not removed:

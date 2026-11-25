@@ -191,14 +191,14 @@ def main():
     renamed = {"old/name": "new/name"}
 
     @asynccontextmanager
-    async def fake_connect(hass, token):
+    async def fake_connect(hass, token, error):
         """A store that answers its websocket commands from `rows`."""
         tokens.append(token)
 
         async def command(type_, **fields):
             sent.append((type_, fields))
             if type_ in fail:
-                raise hacs.HacsError(fail[type_])
+                raise error(fail[type_])
             command = type_.split("/", 1)[1]
             if command == "repositories/list":
                 wanted = fields.get("categories")
@@ -231,8 +231,13 @@ def main():
     # downloads are opt-in, and the store is asked with the caller's token
     assert "disabled" in str(run(hacs.download(fake_hass, "t", "a/b")))
     entry.options["allow_hacs"] = True
-    assert "access token" in str(run(hacs.download(fake_hass, None, "a/b")))
-    assert not sent, sent
+    from custom_components.automation_api import ws_client
+
+    async def without_token():
+        async with ws_client.connect(fake_hass, None, hacs.HacsError):
+            pass
+
+    assert "access token" in str(run(without_token()))
 
     # HACS: unknown repos are added as custom first
     rows.append(row("e/f", category="plugin"))
@@ -299,6 +304,112 @@ def main():
     is_error, text = call("hacs_search", query="M/P")
     assert not is_error and json.loads(text)["items"][0]["full_name"] == "M/p", text
     assert tokens[-1] == "t0ken", tokens[-1]
+
+    # Lovelace: dashboards are created, updated and deleted by Lovelace itself,
+    # through its websocket commands; their config through its live objects
+    import homeassistant.components.lovelace.const as lovelace_const
+
+    from custom_components.automation_api import lovelace
+
+    lovelace_const.DOMAIN = "lovelace"
+
+    class Dashboard:
+        """What Lovelace keeps per dashboard."""
+
+        def __init__(self, config, mode="storage", saved=None):
+            self.config, self.mode, self.saved = config, mode, saved
+
+        async def async_load(self, force):
+            if self.saved is None:
+                raise RuntimeError("no config yet")
+            return self.saved
+
+        async def async_save(self, config):
+            self.saved = config
+
+    live = {
+        None: Dashboard(None, saved={"views": []}),
+        "from-yaml": Dashboard({"url_path": "from-yaml", "title": "Y"}, mode="yaml"),
+    }
+    lovelace_sent = []
+
+    @asynccontextmanager
+    async def fake_lovelace(hass, token, error):
+        async def command(type_, **fields):
+            lovelace_sent.append((token, type_, dict(fields)))
+            command = type_.removeprefix("lovelace/dashboards/")
+            if command == "create":
+                if "-" not in fields["url_path"]:
+                    raise error("Url path needs to contain a hyphen (-) (invalid_format)")
+                item = {**fields, "id": fields["url_path"].replace("-", "_"), "mode": "storage"}
+                live[fields["url_path"]] = Dashboard(item)
+                return item
+            dashboard_id = fields.pop("dashboard_id")
+            dashboard = next(
+                d for d in live.values() if d.config and d.config.get("id") == dashboard_id
+            )
+            if command == "update":
+                dashboard.config = {**dashboard.config, **fields}
+                return dashboard.config
+            del live[dashboard.config["url_path"]]
+            return None
+
+        yield command
+
+    lovelace._connect = fake_lovelace
+    lovelace_hass = SimpleNamespace(data={"lovelace": SimpleNamespace(dashboards=live)})
+
+    def lv(coro):
+        try:
+            return asyncio.run(coro)
+        except ValueError as e:
+            return e
+
+    assert "hyphen" in str(lv(lovelace.create_dashboard(lovelace_hass, "t", "garden", "Garden")))
+    created = lv(lovelace.create_dashboard(lovelace_hass, "t", "my-garden", "Garden", icon="mdi:sprout"))
+    assert created["id"] == "my_garden", created
+    assert lovelace_sent[-1] == (
+        "t",
+        "lovelace/dashboards/create",
+        {
+            "url_path": "my-garden", "title": "Garden", "icon": "mdi:sprout",
+            "show_in_sidebar": True, "require_admin": False,
+        },
+    ), lovelace_sent[-1]
+    # usable at once: Lovelace registered it, no restart and no storage file
+    assert lv(lovelace.append_view(lovelace_hass, "my-garden", {"title": "V"})) == {"view_index": 0}
+    assert live["my-garden"].saved == {"views": [{"title": "V"}]}
+    listed = {d["url_path"]: d for d in lv(lovelace.list_dashboards(lovelace_hass))}
+    assert listed["default"]["title"] == "Overview" and listed["from-yaml"]["mode"] == "yaml"
+    assert listed["my-garden"]["title"] == "Garden" and listed["my-garden"]["icon"] == "mdi:sprout"
+
+    updated = lv(lovelace.update_dashboard(lovelace_hass, "t", "my-garden", {"title": "G2"}))
+    assert updated["title"] == "G2" and live["my-garden"].config["title"] == "G2"
+    assert lovelace_sent[-1][1:] == (
+        "lovelace/dashboards/update",
+        {"dashboard_id": "my_garden", "title": "G2"},
+    ), lovelace_sent[-1]
+    update = lambda url_path, changes: str(
+        lv(lovelace.update_dashboard(lovelace_hass, "t", url_path, changes))
+    )
+    assert "cannot change ['id']" in update("my-garden", {"id": "x"})
+    assert "default dashboard" in update("default", {"title": "x"})
+    assert "not a storage dashboard" in update("from-yaml", {"title": "x"})
+    assert "not found" in update("no-such", {"title": "x"})
+
+    assert lv(lovelace.get_config(lovelace_hass, "no-such")) is None
+    assert "not found" in str(lv(lovelace.set_config(lovelace_hass, "no-such", {"views": []})))
+    assert "'yaml' mode" in str(lv(lovelace.set_config(lovelace_hass, "from-yaml", {"views": []})))
+
+    assert "default dashboard" in str(lv(lovelace.delete_dashboard(lovelace_hass, "t", "default")))
+    assert lv(lovelace.delete_dashboard(lovelace_hass, "t", "my-garden")) is True
+    assert "my-garden" not in live and lovelace_sent[-1][2] == {"dashboard_id": "my_garden"}
+    assert lv(lovelace.delete_dashboard(lovelace_hass, "t", "my-garden")) is False
+
+    # the views hand Lovelace the bearer token of the request
+    is_error, text = call("create_dashboard", url_path="via-mcp", title="M")
+    assert not is_error and json.loads(text)["dashboard"]["id"] == "via_mcp", text
+    assert lovelace_sent[-1][0] == "t0ken", lovelace_sent[-1]
 
     # config entry host: only the address is exposed, and only it is changed
     entry_obj = SimpleNamespace(

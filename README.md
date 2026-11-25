@@ -131,6 +131,15 @@ Only storage-mode dashboards can be written; YAML-mode dashboards are
 read-only and writes return `400`. Use `default` as `{url_path}` for the
 Overview dashboard. After every save, Home Assistant fires `lovelace_updated`.
 
+Lovelace's storage files are never touched. Views and cards are saved
+through the dashboard object Lovelace keeps. Creating, updating and deleting
+a dashboard goes through Lovelace's own `lovelace/dashboards/*` WebSocket
+commands, sent with the access token of the request (`Authorization:
+Bearer`), as *Settings → Dashboards* does. So a new dashboard works at once,
+without a restart, and Lovelace's rules apply: `url_path` needs a hyphen
+(`my-garden`) and may not be in use, and only `title`, `icon`,
+`show_in_sidebar` and `require_admin` can be updated.
+
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/automation_api/lovelace/dashboards` | List dashboards |

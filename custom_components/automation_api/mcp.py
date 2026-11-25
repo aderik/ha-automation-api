@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.11.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "1.12.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -437,13 +437,16 @@ async def create_dashboard(
     show_in_sidebar: bool = True,
     require_admin: bool = False,
 ) -> Any:
-    """Create a new storage-mode Lovelace dashboard.
+    """Create a new storage-mode Lovelace dashboard, as Settings → Dashboards
+    does.
 
     The dashboard is immediately visible under Settings → Dashboards and at
-    `/lovelace-<url_path>`. It starts empty; add views and cards separately.
+    `/<url_path>`, without a restart. It starts empty; add views and cards
+    separately.
 
     Args:
-        url_path: URL slug — e.g. 'moestuin' yields /lovelace-moestuin.
+        url_path: URL slug with a hyphen, not in use yet — e.g. 'my-garden'
+            yields /my-garden.
         title: Sidebar title.
         icon: MDI icon, e.g. 'mdi:sprout'.
         show_in_sidebar: Whether to show in the left sidebar.
@@ -461,7 +464,8 @@ async def create_dashboard(
 
 @tool
 async def update_dashboard_metadata(c, url_path: str, changes: dict[str, Any]) -> Any:
-    """Update dashboard metadata (title, icon, show_in_sidebar, require_admin).
+    """Update dashboard metadata: `changes` holds any of title, icon (null
+    removes it), show_in_sidebar and require_admin.
 
     Cannot modify the default/Overview dashboard's metadata.
     """

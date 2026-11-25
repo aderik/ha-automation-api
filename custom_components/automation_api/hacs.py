@@ -2,9 +2,9 @@
 
 Home Assistant 2026.11 took HACS into core as the Marketplace integration;
 older installs still have the HACS custom integration. This module is a
-client of the store, like the store's own panel: it connects to this Home
-Assistant's WebSocket API with the caller's access token and sends the
-store's commands (`marketplace/repositories/list`,
+client of the store, like the store's own panel: through `ws_client` it
+connects to this Home Assistant's WebSocket API with the caller's access
+token and sends the store's commands (`marketplace/repositories/list`,
 `marketplace/repository/install`, ..., or their `hacs/...` counterparts of
 HACS 2.0.5). The store checks and carries out every request itself, as that
 user: administrator rights, the Marketplace's first-run warning and its
@@ -18,16 +18,13 @@ of this integration is enabled.
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
-from itertools import count
 from typing import Any
 
-import aiohttp
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import CONF_ALLOW_HACS, DOMAIN
+from .ws_client import connect as _connect
 
 
 # sort name -> (key, descending)
@@ -76,12 +73,6 @@ _FIELDS = (
     "last_updated",
 )
 
-# Seconds for a whole request, the store's downloads from GitHub included
-_TIMEOUT = 300
-
-# Home Assistant's bind address -> where to reach it from the inside
-_LOOPBACK = {"": "127.0.0.1", "0.0.0.0": "127.0.0.1", "::": "::1"}
-
 
 class HacsError(Exception):
     """A request the store can't fulfil; reported to the caller as a 400."""
@@ -100,69 +91,9 @@ def _require_downloads_allowed(hass: HomeAssistant) -> None:
         )
 
 
-async def _receive(ws) -> dict:
-    msg = await ws.receive()
-    if msg.type is not aiohttp.WSMsgType.TEXT:
-        raise HacsError("Home Assistant closed the WebSocket connection")
-    return msg.json()
-
-
-@asynccontextmanager
-async def _connect(hass: HomeAssistant, token: str):
-    """Connect to this Home Assistant's WebSocket API as the caller.
-
-    Yields `command(type, **fields)`, which returns the result of that
-    command or raises `HacsError` with the error it was answered with.
-    """
-    api = hass.config.api
-    host = _LOOPBACK.get(api.host, api.host)
-    if ":" in host:
-        host = f"[{host}]"
-    url = f"{'wss' if api.use_ssl else 'ws'}://{host}:{api.port}/api/websocket"
-    # The certificate names the hostname of Home Assistant, not this address
-    session = async_get_clientsession(hass, verify_ssl=not api.use_ssl)
-    try:
-        # The list of a store is a few MB, more than the default message size
-        async with (
-            asyncio.timeout(_TIMEOUT),
-            session.ws_connect(url, max_msg_size=0) as ws,
-        ):
-            await _receive(ws)  # auth_required
-            await ws.send_json({"type": "auth", "access_token": token})
-            if (await _receive(ws)).get("type") != "auth_ok":
-                raise HacsError("Home Assistant refused the access token")
-            ids = count(1)
-
-            async def command(type_: str, **fields: Any) -> Any:
-                msg_id = next(ids)
-                await ws.send_json({"id": msg_id, "type": type_, **fields})
-                while (reply := await _receive(ws)).get("id") != msg_id:
-                    pass
-                if not reply.get("success"):
-                    error = reply.get("error") or {}
-                    raise HacsError(f"{error.get('message')} ({error.get('code')})")
-                return reply.get("result")
-
-            yield command
-    except TimeoutError as e:
-        raise HacsError(
-            f"no answer from the store within {_TIMEOUT} seconds; an install or "
-            "removal may still finish, check with a search before retrying"
-        ) from e
-    except aiohttp.ClientError as e:
-        raise HacsError(
-            f"could not reach Home Assistant's WebSocket API at {url}: {e}"
-        ) from e
-
-
 @asynccontextmanager
 async def _store(hass: HomeAssistant, token: str | None):
     """Yield `send(request, **fields)` for the store that is set up."""
-    if not token:
-        raise HacsError(
-            "the store is asked as the caller; send the access token as "
-            "`Authorization: Bearer <token>`"
-        )
     commands = next(
         (
             commands
@@ -173,7 +104,7 @@ async def _store(hass: HomeAssistant, token: str | None):
     )
     if commands is None:
         raise HacsError("neither the Marketplace nor HACS is set up")
-    async with _connect(hass, token) as command:
+    async with _connect(hass, token, HacsError) as command:
 
         async def send(request: str, **fields: Any) -> Any:
             return await command(commands[request], **fields)

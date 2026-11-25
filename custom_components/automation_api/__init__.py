@@ -4,6 +4,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.service import async_register_admin_service
 
 from .const import DOMAIN
 from .http import async_register_http
@@ -50,9 +51,9 @@ async def async_setup(hass: HomeAssistant, config: dict):
             "automation", "trigger", {"entity_id": call.data.get("entity_id"), "skip_condition": True}, blocking=True
         )
 
-    hass.services.async_register(DOMAIN, "create_automation", handle_create, schema=create_schema)
-    hass.services.async_register(DOMAIN, "delete_automation", handle_delete, schema=delete_schema)
-    hass.services.async_register(DOMAIN, "test_automation", handle_test, schema=test_schema)
+    async_register_admin_service(hass, DOMAIN, "create_automation", handle_create, schema=create_schema)
+    async_register_admin_service(hass, DOMAIN, "delete_automation", handle_delete, schema=delete_schema)
+    async_register_admin_service(hass, DOMAIN, "test_automation", handle_test, schema=test_schema)
     return True
 
 

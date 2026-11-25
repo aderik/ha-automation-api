@@ -8,6 +8,7 @@ from .storage import create_or_update, delete as delete_automation, reload_autom
 from .utils import log, normalize_payload
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "automation_api/create",
@@ -29,6 +30,7 @@ async def ws_create(hass, connection, msg):
     connection.send_result(msg["id"], {"status": "ok", "id": data.get("id")})
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "automation_api/delete",
@@ -43,6 +45,7 @@ async def ws_delete(hass, connection, msg):
     connection.send_result(msg["id"], {"status": "ok", "id": msg.get("automation_id")})
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "automation_api/test",

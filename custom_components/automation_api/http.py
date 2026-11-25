@@ -247,7 +247,7 @@ class AutomationApiLogView(HomeAssistantView):
         _require_admin(request)
 
         path = hass.config.path(LOG_FILE)
-        if not path or not os.path.exists(path):
+        if not path or not await hass.async_add_executor_job(os.path.exists, path):
             return self.json({"error": "not found"}, status_code=404)
         return web.FileResponse(path, headers={"Content-Type": "text/plain; charset=utf-8"})
 

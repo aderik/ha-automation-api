@@ -53,8 +53,14 @@ async def get(
 async def save(
     hass: HomeAssistant, token: str | None, domain: str, key: str, config: dict
 ) -> None:
-    """Create or replace an automation or script; Home Assistant reloads it."""
+    """Create or replace an automation or script, loaded when this returns."""
     await _call(hass, token, "POST", domain, key, config)
+    # The config API reloads in the background and answers before that is
+    # done. Wait for a reload here, so that what was saved can be triggered
+    # or called as soon as this returns.
+    await hass.services.async_call(
+        domain, "reload", {"id": key} if domain == "automation" else {}, blocking=True
+    )
 
 
 async def delete(hass: HomeAssistant, token: str | None, domain: str, key: str) -> bool:

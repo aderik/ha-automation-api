@@ -215,6 +215,7 @@ def main():
         return 200, {"result": "ok"}
 
     config_api._request = fake_request
+    HASS.services.async_call = AsyncMock()
     # voluptuous is a stub here: stand in for the defaults of the schema
     mcp.views.CREATE_SCHEMA = lambda data: {"description": "", "condition": [], "mode": "single", **data}
 
@@ -233,9 +234,14 @@ def main():
             "action": [{"action": "light.turn_on"}], "mode": "single",
         },
     ), requests[-1]
+    # loaded on return: the config API itself only reloads in the background
+    HASS.services.async_call.assert_awaited_with(
+        "automation", "reload", {"id": "a1"}, blocking=True
+    )
     is_error, text = call(
         "create_or_update_automation", id="a2", name="B", trigger=[], action=[], mode="bogus"
     )
+    assert HASS.services.async_call.await_count == 1
     assert is_error and "Message malformed: bad mode (HTTP 400)" in text, text
     assert call("delete_automation", automation_id="a1")[0] is False and not saved["automation"]
     assert [r[1] for r in requests[-2:]] == ["GET", "DELETE"], requests[-2:]
@@ -246,6 +252,7 @@ def main():
     is_error, text = call("create_or_update_script", script_id="s1", config=script)
     assert not is_error and json.loads(text)["entity_id"] == "script.s1", text
     assert requests[-1] == ("t0ken", "POST", "/api/config/script/config/s1", script)
+    HASS.services.async_call.assert_awaited_with("script", "reload", {}, blocking=True)
     assert json.loads(call("get_script", script_id="s1")[1]) == script
     is_error, text = call("get_script", script_id="nope")
     assert is_error and "HTTP 404" in text, text

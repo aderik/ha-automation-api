@@ -339,7 +339,7 @@ async def upsert_template_entity(
         config: The fields of the helper's form, e.g. for a sensor
             {"name": "Days since watering", "state": "{{ ... }}",
              "unit_of_measurement": "d", "device_class": "duration",
-             "state_class": "measurement"}; `advanced_options` holds
+             "state_class": "measurement"}; `additional_options` holds
             {"availability": "{{ ... }}"}. Only what the form offers is
             accepted: no attributes, icon templates or triggers. Set a fixed
             icon with `update_registry_entity`.

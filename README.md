@@ -11,7 +11,7 @@ A Home Assistant custom integration that lets AI agents (Claude, Cursor or any
 other MCP client) and scripts (n8n, Make, CI pipelines) configure Home
 Assistant. It exposes a REST API for what the built-in API leaves out:
 automations, scripts, helpers, template entities, Lovelace dashboards,
-registries, integrations, HACS and recorder history.
+registries, integrations, the Marketplace (HACS) and recorder history.
 
 It writes no configuration files of its own. Everything is handed to the
 part of Home Assistant that owns it, the way the UI does: the config API of
@@ -33,25 +33,32 @@ process to run.
 - Entity, device and config-entry registries, including reload, enable,
   disable and remove
 - Adding integrations through their config flows, including discovered ones
-- Searching the Marketplace / HACS store, installing and removing repositories (opt-in)
+- Searching the Marketplace or HACS, and installing and removing
+  repositories (opt-in)
 - Adding Matter devices with a pairing code
 - Reading repairs and persistent notifications; fixing a statistic's unit
 - Reading and changing the energy dashboard settings
 - Recorder history with per-entity change counts
 - Built-in MCP server (Streamable HTTP) with a tool for every endpoint
-- Authenticated with Home Assistant's own long-lived access tokens
-- Installable through HACS
+- Authenticated with Home Assistant's own access tokens (administrator)
+- No configuration files written: every change goes through Home
+  Assistant's own APIs
+- Installable through the Marketplace or HACS
 
 ## Installation
 
-1. In HACS, add this repository as a custom repository of type *Integration*.
+1. In the Marketplace (Home Assistant 2026.11 and later) or HACS, add this
+   repository as a custom repository of type *Integration*.
 2. Install it and restart Home Assistant.
 3. Go to *Settings → Devices & services → Add integration* and choose
    **Automation API**. There is nothing to configure. The only option,
-   *Allow HACS downloads* under *Configure*, is off by default (see
-   [HACS](#hacs)).
+   *Allow HACS / Marketplace downloads* under *Configure*, is off by default
+   (see [HACS / Marketplace](#hacs--marketplace)).
 4. Create a long-lived access token for an **administrator** account
    (profile → *Security*).
+
+Developed and tested against Home Assistant 2026.11. Nothing has to be added
+to `configuration.yaml`.
 
 ## Authentication
 
@@ -64,9 +71,13 @@ Authorization: Bearer <long-lived access token>
 
 The token must belong to an administrator; other tokens receive `401`.
 
-**Upgrading from 0.8.x or earlier:** the `X-API-KEY` header and the generated
-API key no longer exist. Send a bearer token instead. The integration does not
-need to be re-added.
+The header does more than open the door. Several endpoints act as the
+caller: automations, scripts, `input_*` helpers, creating and changing
+dashboards, and the store. For those the integration connects to Home
+Assistant's own API with the token of the request and passes the request on,
+so Home Assistant carries it out as that user, with its own validation and
+permission checks. A request without `Authorization: Bearer` is refused
+there with a `400`.
 
 ## REST API
 
@@ -81,7 +92,7 @@ All paths are relative to `http://<home-assistant>:8123`.
 | `POST` | `/api/automation_api/automations` | Create or update (`{id, name, trigger, action, condition?, description?, mode?}`) |
 | `DELETE` | `/api/automation_api/automations?id=<id>` | Delete; `404` if there is none |
 | `POST` | `/api/automation_api/trigger` | Run the actions now, skipping conditions (`{"id": "<id>"}`) |
-| `GET` | `/api/automation_api/automations_yaml?id=<id>` | Raw YAML; omit `id` for the whole file |
+| `GET` | `/api/automation_api/automations_yaml?id=<id>` | The stored config, read from `automations.yaml`; omit `id` for all of them |
 | `GET` | `/api/automation_api/areas` | List areas |
 | `GET` | `/api/automation_api/entities?domain=&area=&search=` | List entities with optional filters |
 | `GET` | `/api/automation_api/log` | The integration's own action log |
@@ -103,7 +114,12 @@ Automations are saved through the config API of Home Assistant's automation
 editor, with the access token of the request: Home Assistant validates the
 config, stores it, reloads that automation and, on delete, removes its
 entity. An invalid config is answered with `400` and Home Assistant's
-message; nothing is stored.
+message; nothing is stored. When the answer comes, the automation is loaded
+and can be triggered.
+
+`trigger`, `condition` and `action` take what the automation editor's YAML
+mode takes. Home Assistant stores them under its current names (`triggers`,
+`conditions`, `actions`).
 
 ### Scripts
 
@@ -112,9 +128,17 @@ message; nothing is stored.
 | `GET` `PUT` `DELETE` | `/api/automation_api/scripts/{id}` | Read, create or replace (body: the script config) or delete a script |
 
 `{id}` becomes the entity id `script.<id>`. The body is what the script
-editor stores, for example `{"alias": "...", "sequence": [...], "mode":
-"single", "fields": {...}}`. Scripts go through the config API of the script
-editor, like automations.
+editor stores. Scripts go through the config API of the script editor, like
+automations, and are loaded when the answer comes.
+
+```bash
+curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  http://ha:8123/api/automation_api/scripts/water_given \
+  -d '{"alias":"Water given","mode":"single","sequence":[
+        {"action":"input_datetime.set_datetime",
+         "target":{"entity_id":"input_datetime.last_watered"},
+         "data":{"timestamp":"{{ now().timestamp() }}"}}]}'
+```
 
 ### Helpers
 
@@ -129,25 +153,63 @@ Helpers are ordinary UI helpers, as made under *Settings → Devices & services
 | `GET` `PUT` `DELETE` | `/api/automation_api/template/{type}/{entry_id}` | Read, change the options of, or delete a template entity |
 | `GET` `POST` | `/api/automation_api/history_stats` | List `history_stats` sensors, or create one |
 | `GET` `PUT` `DELETE` | `/api/automation_api/history_stats/{entry_id}` | Read, change the options of, or delete a `history_stats` sensor |
-| `POST` | `/api/automation_api/reload` | `{"domains": [...]}`, or an empty body for `homeassistant.reload_all` |
-| `POST` | `/api/automation_api/restart` | Restart Home Assistant |
 
-**`input_*` helpers** (`input_boolean`, `input_button`, `input_datetime`,
-`input_number`, `input_select`, `input_text`) are created, changed and
-deleted with the WebSocket commands of their integration, sent with the
-access token of the request. Home Assistant derives the id of a new helper,
-and its entity id, from `name`; the answer holds both.
+#### `input_*` helpers
 
-**Template entities and `history_stats` sensors** are config entries, made
-with the config flow of their integration and changed with its options flow,
-as the UI does. They are addressed by `entry_id`; the answer to a create
-holds it, with the entities made. Only what the helper's form offers is
-accepted, so a template entity has no attributes, icon template or trigger;
-a field the form does not have is refused and nothing is created. A change
-replaces the options the form holds: optional fields left out are cleared,
-and `name` can't be changed there. Any type the Template helper offers
-works (`sensor`, `binary_sensor`, `switch`, `button`, `number`, `select`,
-...).
+`input_boolean`, `input_button`, `input_datetime`, `input_number`,
+`input_select` and `input_text` helpers are created, changed and deleted
+with the WebSocket commands of their integration, sent with the access token
+of the request.
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  http://ha:8123/api/automation_api/helpers/input_number \
+  -d '{"name":"Storm gust","min":20,"max":80,"step":1,"unit_of_measurement":"km/h"}'
+# {"status":"ok","domain":"input_number","helper":{"id":"storm_gust",
+#  "entity_id":"input_number.storm_gust","name":"Storm gust","min":20.0, ...}}
+```
+
+Home Assistant derives the id of a new helper, and its entity id, from
+`name`; the answer holds both. `PUT` replaces the whole config of an
+existing helper, so send every field, `name` included; a config read with
+`GET` can be sent back as it came.
+
+#### Template entities and `history_stats` sensors
+
+These are config entries, made with the config flow of their integration and
+changed with its options flow, as the UI does. They are addressed by
+`entry_id`; the answer to a create holds it, with the entities made.
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  http://ha:8123/api/automation_api/template/sensor \
+  -d '{"name":"Days since watering","unit_of_measurement":"d",
+       "state":"{{ ((now() - states(\"input_datetime.last_watered\") | as_datetime | as_local).days) }}"}'
+# {"status":"ok","entry_id":"01M89...","title":"Days since watering",
+#  "config":{"template_type":"sensor", ...},"entities":["sensor.days_since_watering"]}
+
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  http://ha:8123/api/automation_api/history_stats \
+  -d '{"name":"Rain last 2h","entity_id":"binary_sensor.raining","state":["on"],
+       "type":"time","end":"{{ now() }}","duration":{"hours":2}}'
+```
+
+- **Fields.** The body holds the fields of the helper's form. For a template
+  entity those depend on the type: a sensor takes `name`, `state`,
+  `unit_of_measurement`, `device_class`, `state_class` and `device_id`, and
+  `additional_options` with `availability`. A `history_stats` sensor takes
+  `name`, `entity_id`, `state` (a list), `type` (`time`, `ratio` or `count`),
+  exactly two of `start`, `end` and `duration`, and `state_class`.
+- **Types.** Any type the Template helper offers works: `sensor`,
+  `binary_sensor`, `switch`, `button`, `number`, `select` and more.
+- **Limits.** Only what the form offers is accepted, so a template entity
+  has no attributes, icon template or trigger. A field the form does not
+  have is refused and nothing is created. Set a fixed icon on the entity
+  with `PATCH /entity_registry/{entity_id}`.
+- **Changing.** `PUT` replaces the options the form holds: optional fields
+  left out are cleared, and `name` can't be changed there.
+
+#### What is not covered
 
 Helpers, template entities and sensors defined in YAML are not listed and
 can't be changed here.
@@ -156,8 +218,19 @@ Other helpers that are config entries, such as groups (a notify group too)
 and `statistics` sensors, can be made with the [config flow
 endpoints](#adding-integrations-config-flows). A notify group made that way
 groups notify entities and passes on a message and a title only. For a
-group that also passes `data` on (channels, tags, actions), make a script
-with `fields` that calls each notify service.
+group that also passes `data` on (channels, tags, actions), make a
+[script](#scripts) with `fields` that calls each notify service.
+
+### Reload and restart
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/automation_api/reload` | `{"domains": [...]}` reloads the YAML of those domains; an empty body calls `homeassistant.reload_all` |
+| `POST` | `/api/automation_api/restart` | Restart Home Assistant |
+
+Nothing made through this API needs either. They are there for YAML you
+edit yourself and for integrations installed from the store, which need a
+restart.
 
 ### Lovelace dashboards
 
@@ -168,8 +241,8 @@ Overview dashboard. After every save, Home Assistant fires `lovelace_updated`.
 Lovelace's storage files are never touched. Views and cards are saved
 through the dashboard object Lovelace keeps. Creating, updating and deleting
 a dashboard goes through Lovelace's own `lovelace/dashboards/*` WebSocket
-commands, sent with the access token of the request (`Authorization:
-Bearer`), as *Settings → Dashboards* does. So a new dashboard works at once,
+commands, sent with the access token of the request, as *Settings →
+Dashboards* does. So a new dashboard works at once,
 without a restart, and Lovelace's rules apply: `url_path` needs a hyphen
 (`my-garden`) and may not be in use, and only `title`, `icon`,
 `show_in_sidebar` and `require_admin` can be updated.
@@ -215,7 +288,9 @@ Adds an integration the way *Add integration* in the UI does, step by step.
 Every response is a flow step: `form` (answer with `{"user_input": {...}}`
 matching `data_schema`), `menu` (`{"user_input": {"next_step_id": ...}}`),
 `create_entry` (done, carries `entry_id`) or `abort` (`reason`). OAuth
-integrations need a browser and can't be finished through the API.
+integrations need a browser and can't be finished through the API. Helpers
+that are config entries, such as groups and `statistics` sensors, are made
+the same way (`{"domain": "group"}`, `{"domain": "statistics"}`).
 
 | Method | Path | Description |
 |---|---|---|
@@ -242,9 +317,9 @@ repository also needs GitHub connected there. Its refusals come back as the
 `error` of a `400`.
 
 Downloading installs third-party code that runs with full Home Assistant
-rights, so on top of that downloads and removals are **off by default**: enable *Allow HACS / Marketplace downloads* under
-Settings → Devices & services → Automation API → Configure. Searching works
-either way.
+rights, so on top of that downloads and removals are **off by default**:
+enable *Allow HACS / Marketplace downloads* under *Settings → Devices &
+services → Automation API → Configure*. Searching works either way.
 
 | Method | Path | Description |
 |---|---|---|
@@ -339,33 +414,12 @@ at a glance:
 }
 ```
 
-## Upgrading from 1.x
-
-Version 2.0.0 no longer writes YAML. If you used an earlier version:
-
-- **The package file** `<config>/packages/automation_api.yaml` is no longer
-  read or written. Home Assistant keeps loading it, so what is in it keeps
-  working; it is yours to edit or to move into the UI. The endpoints and
-  tools for the whole package (`/package`, `get_managed_package`,
-  `overwrite_managed_package`) and for notify groups (`/notify_group`,
-  `*_notify_group`) are gone.
-- **Helpers** are now UI helpers: create with `POST
-  /helpers/{domain}`, and the id comes from `name`. `PUT
-  /helpers/{domain}/{id}` only changes an existing UI helper.
-- **Template entities and `history_stats` sensors** are addressed by
-  `entry_id` instead of name, and take the fields of the helper's form.
-- **The services** `automation_api.create_automation`,
-  `delete_automation` and `test_automation`, and the WebSocket commands
-  `automation_api/create`, `delete` and `test`, are gone. Use the REST
-  endpoints or the MCP tools; to run an automation from a script, use
-  `automation.trigger`.
-- **Deleting an automation** that does not exist now answers `404`.
-
 ## MCP server
 
 The integration serves an MCP server over Streamable HTTP at
-`/api/automation_api/mcp`. It offers one tool per REST endpoint, plus
-`get_state` and `call_service`, and uses the same administrator bearer token.
+`/api/automation_api/mcp`. It offers 69 tools: one for every REST endpoint,
+plus `get_state` and `call_service`. It uses the same administrator bearer
+token. A tool runs its REST endpoint in-process, so both behave the same.
 
 Claude Code:
 
@@ -392,41 +446,78 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 |---|---|---|---|
 | Purpose | Configure HA from agents and scripts | Voice-style control through Assist | Configure, build and debug HA |
 | Runs | Inside HA (custom integration) | Inside HA (core integration) | Inside HA (custom component), or as add-on, Docker or `uvx` |
-| Authentication | Admin long-lived token | OAuth or token | None in-process; token otherwise |
+| Authentication | Admin access token | OAuth or token | Admin token or its own account; secret URL or HA sign-in for clients |
 | Entity scope | Everything | Only entities exposed to Assist | Everything |
 | Control devices | `call_service` | Assist intents | Yes |
 | REST API besides MCP | Yes | No | No |
-| Automations | Create, edit, delete, trigger | No | Yes |
-| Scripts and scenes | Scripts | No | Yes |
-| Helpers | `input_*`, as UI helpers | No | Yes, as UI helpers |
+| How changes are made | Through Home Assistant's own APIs, as the caller; no files written | Assist intents | Through Home Assistant's APIs; file and YAML tools are opt-in |
+| Automations | Create, edit, delete, trigger | No | Yes, plus traces |
+| Scripts | Create, edit, delete | No | Yes |
+| Scenes, blueprints | No | No | Yes |
+| `input_*` helpers | Yes, as UI helpers | No | Yes, as UI helpers |
 | Template entities, `history_stats` | Yes, as UI helpers | No | Template helpers |
+| Other helpers (groups, `statistics`, ...) | Through the config flow tools | No | Yes |
 | Dashboards | Dashboards, views and single cards | No | Yes |
 | Entity and device registry | Yes | No | Yes |
 | Add integrations (config flows) | Yes | No | Yes |
 | Add devices | Matter, with a pairing code | No | Matter, Z-Wave, Zigbee and Thread |
-| HACS / Marketplace | Search, install and remove through either; changes off by default | No | Yes, through either |
+| HACS / Marketplace | Search, install and remove through either; changes off by default | No | Yes |
 | Energy dashboard settings | Read, validate and change, costs included; dry run and stale-read check | No | Yes, with a dry run |
 | History | Yes, with change counts | No | Yes, plus statistics, traces and logs |
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs, plus logs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
-| Safeguards | Admin only, HACS opt-in, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 69 | Depends on Assist | 86 |
+| Safeguards | Admin only, store changes opt-in, Home Assistant validates every change, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
+| Tools | 69 | Depends on Assist | 87 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,
 CI) next to MCP.
 
+## Upgrading
+
+### From 1.x to 2.0
+
+Version 2.0.0 no longer writes YAML. If you used an earlier version:
+
+- **The package file** `<config>/packages/automation_api.yaml` is no longer
+  read or written. Home Assistant keeps loading it, so what is in it keeps
+  working; it is yours to edit or to move into the UI. The endpoints and
+  tools for the whole package (`/package`, `get_managed_package`,
+  `overwrite_managed_package`) and for notify groups (`/notify_group`,
+  `*_notify_group`) are gone.
+- **Helpers** are now UI helpers: create with `POST
+  /helpers/{domain}`, and the id comes from `name`. `PUT
+  /helpers/{domain}/{id}` only changes an existing UI helper.
+- **Template entities and `history_stats` sensors** are addressed by
+  `entry_id` instead of name, and take the fields of the helper's form.
+- **The services** `automation_api.create_automation`,
+  `delete_automation` and `test_automation`, and the WebSocket commands
+  `automation_api/create`, `delete` and `test`, are gone. Use the REST
+  endpoints or the MCP tools; to run an automation from a script, use
+  `automation.trigger`.
+- **Deleting an automation** that does not exist now answers `404`.
+- **Moving what the package file holds into the UI** keeps the entity ids
+  when you take an item out of the file, reload its domain and then create
+  it again here. For an `input_*` helper, create it with its old id as
+  `name` and give it its real name with a `PUT`. A template or `statistics`
+  entity that had a `unique_id` leaves a registry entry behind that holds
+  its entity id; remove that entry first. A `statistics` helper takes the
+  name of its source sensor's device into its entity id; give it its old id
+  back with `PATCH /entity_registry/{entity_id}` (`new_entity_id`).
+
+### From 0.8.x or earlier
+
+The `X-API-KEY` header and the generated API key no longer exist. Send a
+bearer token instead. The integration does not need to be re-added.
+
 ## Notes
 
 The integration writes one file: its own action log,
 `<config>/automation_api.log`, with a line for every change it was asked to
-make. It reads `automations.yaml` for the raw YAML endpoint and writes no
-configuration; see the top of this page.
-
-Several endpoints act as the caller: automations, scripts, `input_*`
-helpers, creating and changing dashboards, and the store. They connect to
-Home Assistant's own API with the access token of the request, so that token
-has to arrive as `Authorization: Bearer`.
+make (`GET /api/automation_api/log`). It reads `automations.yaml` for the
+stored-config endpoint. It writes no configuration and keeps no state of its
+own; everything it makes belongs to the Home Assistant integration that
+holds it and stays when this integration is removed.
 
 ## License
 

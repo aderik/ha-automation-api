@@ -46,6 +46,12 @@ def _require_admin(request) -> None:
         raise Unauthorized()
 
 
+def _bearer(request) -> str | None:
+    """The caller's access token, for what is done as that user."""
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    return token if scheme == "Bearer" else None
+
+
 class AutomationApiView(HomeAssistantView):
     url = "/api/automation_api/automations"
     name = "api:automation_api:automations"
@@ -1143,6 +1149,7 @@ class HacsRepositoriesView(_AuthedView):
         try:
             items = await hacs_mod.search(
                 hass,
+                _bearer(request),
                 query=request.query.get("query"),
                 category=request.query.get("category"),
                 installed=_bool_query(request, "installed"),
@@ -1172,6 +1179,7 @@ class HacsDownloadView(_AuthedView):
         try:
             result = await hacs_mod.download(
                 hass,
+                _bearer(request),
                 body["repository"],
                 category=body.get("category"),
                 version=body.get("version"),
@@ -1197,7 +1205,9 @@ class HacsRemoveView(_AuthedView):
             return self.json({"error": "missing repository"}, status_code=400)
         await log(hass, f"HTTP hacs remove {body['repository']}")
         try:
-            result = await hacs_mod.remove(hass, body["repository"])
+            result = await hacs_mod.remove(
+                hass, _bearer(request), body["repository"]
+            )
         except hacs_mod.HacsError as e:
             return self.json({"error": str(e)}, status_code=400)
         except Exception as e:

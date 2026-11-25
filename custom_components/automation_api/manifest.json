@@ -3,7 +3,6 @@
   "name": "Automation API",
   "after_dependencies": [
     "energy",
-    "marketplace",
     "matter",
     "recorder"
   ],
@@ -15,5 +14,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/aderik/ha-automation-api/issues",
   "requirements": [],
-  "version": "1.10.3"
+  "version": "1.11.0"
 }

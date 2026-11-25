@@ -186,13 +186,20 @@ integrations need a browser and can't be finished through the API.
 Search the store and install, update or remove repositories. Home Assistant
 2026.11 took HACS into core as the **Marketplace** integration; on older
 installs the HACS custom integration is used. The Marketplace wins when both
-are loaded; the endpoints and MCP tools (`hacs_*`) are the same for both.
-Neither has a public API, so this mirrors their own websocket commands
-(tested against the Marketplace of 2026.11 and HACS 2.0.5) and may break when
-they change.
+are set up; the endpoints and MCP tools (`hacs_*`) are the same for both.
+
+The integration is a client of the store, like the store's own panel: it
+connects to Home Assistant's WebSocket API with the access token of the
+request and sends the store's commands (`marketplace/repository/install`,
+...; tested against the Marketplace of 2026.11, and written for HACS 2.0.5).
+The store carries out every request itself, as the user of that token. So
+the token has to be sent as `Authorization: Bearer`, and in the Marketplace
+that user must have accepted its first-run warning; adding a custom
+repository also needs GitHub connected there. Its refusals come back as the
+`error` of a `400`.
 
 Downloading installs third-party code that runs with full Home Assistant
-rights, so downloads and removals are **off by default**: enable *Allow HACS / Marketplace downloads* under
+rights, so on top of that downloads and removals are **off by default**: enable *Allow HACS / Marketplace downloads* under
 Settings → Devices & services → Automation API → Configure. Searching works
 either way.
 
@@ -207,8 +214,7 @@ store is added as a custom repository first, which needs `category`
 (`integration`, `plugin`, `theme`, ...). A downloaded integration needs a
 restart (`restart_required: true`); then add it with a config flow. Before
 removing an integration, remove its config entries: the Marketplace refuses
-while they exist, HACS leaves them behind. The option above replaces the
-Marketplace's own first-run warning for API and MCP clients.
+while they exist, HACS leaves them behind.
 
 ### Matter
 

@@ -23,7 +23,7 @@ from homeassistant.helpers.json import json_dumps
 from . import http as views
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "1.10.3"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "1.11.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -71,6 +71,7 @@ class _Request(dict):
     def __init__(self, request, query: dict[str, str], body: Any):
         super().__init__(hass_user=request["hass_user"])
         self.app = request.app
+        self.headers = request.headers
         self.query = query
         self._body = body
 
@@ -982,7 +983,11 @@ async def hacs_download(
 
     This installs third-party code with full Home Assistant rights. Only use
     it when the user asked for that repository; it fails unless 'Allow HACS
-    downloads' is on in the integration options. When `restart_required`
+    downloads' is on in the integration options. The store carries it out as
+    the user of your access token: in the Marketplace that user must have
+    accepted its warning, and adding a custom repository needs GitHub
+    connected there; an error that says so is for the user to settle in the
+    Marketplace. When `restart_required`
     is true, restart Home Assistant (ask the user first), then add the
     integration with `start_config_flow` using its `domain`."""
     return await c(

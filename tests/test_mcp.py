@@ -67,6 +67,7 @@ def rpc(method, params=None, *, admin=True, notification=False):
     request = MagicMock()
     request.json = AsyncMock(return_value=msg)
     request.__getitem__.return_value = SimpleNamespace(is_admin=admin, id="user-1")
+    request.headers = {"Authorization": "Bearer t0ken"}
     resp = asyncio.run(mcp.McpView().post(request))
     return json.loads(resp.body) if isinstance(resp, SimpleNamespace) else resp
 
@@ -172,45 +173,53 @@ def main():
     )
     assert done == {"type": "create_entry", "entry_id": "e1", "title": "Met"}, done
 
-    # HACS: downloads are opt-in; unknown repos are added as custom first
+    # HACS / Marketplace: a WebSocket client of the store, as the caller
+    from contextlib import asynccontextmanager
+
     from custom_components.automation_api import hacs
 
-    sys.modules["custom_components.hacs"] = MagicMock()
-    sys.modules["custom_components.hacs.enums"] = MagicMock()
+    def row(full_name, installed=False, stars=1, last_updated=None, category="integration"):
+        return {
+            "id": str(len(rows) + 100), "full_name": full_name, "name": full_name,
+            "category": category, "domain": "x", "description": "",
+            "installed": installed, "installed_version": None,
+            "available_version": "v1", "pending_upgrade": False, "stars": stars,
+            "downloads": 0, "last_updated": last_updated, "topics": [],
+        }
 
-    def fake_repo(full_name, installed=False, stars=1, last_updated=None):
-        return SimpleNamespace(
-            data=SimpleNamespace(
-                id="1", full_name=full_name, category="integration", domain="x",
-                description="", installed=installed, stargazers_count=stars,
-                downloads=0, last_fetched=1, last_updated=last_updated,
-            ),
-            display_name=full_name, display_installed_version=None,
-            display_available_version="v1", pending_update=False,
-            ignored_by_country_configuration=False,
-            async_download_repository=AsyncMock(),
-        )
+    rows, sent, tokens, fail = [], [], [], {}
+    renamed = {"old/name": "new/name"}
 
-    store = {}
-    hacs_base = MagicMock()
-    hacs_base.system.disabled = False
-    hacs_base.common.categories = {"integration", "plugin"}
-    hacs_base.common.skip = set()
-    hacs_base.common.renamed_repositories = {}
-    hacs_base.repositories.get_by_id.return_value = None
-    hacs_base.repositories.get_by_full_name.side_effect = store.get
-    hacs_base.async_recreate_entities = AsyncMock()
-    hacs_base.data.async_write = AsyncMock()
+    @asynccontextmanager
+    async def fake_connect(hass, token):
+        """A store that answers its websocket commands from `rows`."""
+        tokens.append(token)
 
-    async def register(repository_full_name, category):
-        store[repository_full_name] = fake_repo(repository_full_name)
+        async def command(type_, **fields):
+            sent.append((type_, fields))
+            if type_ in fail:
+                raise hacs.HacsError(fail[type_])
+            command = type_.split("/", 1)[1]
+            if command == "repositories/list":
+                wanted = fields.get("categories")
+                return [dict(r) for r in rows if not wanted or r["category"] in wanted]
+            if command == "repositories/add":
+                if fields["category"] == "integration":  # anything else fails validation
+                    name = fields["repository"]
+                    rows.append(row(renamed.get(name, name)))
+                return None
+            target = next(r for r in rows if r["id"] == fields["repository"])
+            target["installed"] = command in ("repository/install", "repository/download")
+            return None
 
-    hacs_base.async_register_repository = AsyncMock(side_effect=register)
+        yield command
+
+    hacs._connect = fake_connect
     entry = SimpleNamespace(options={})
-    no_entries = SimpleNamespace(async_loaded_entries=lambda d: [], async_entries=lambda d: [])
+    set_up = {"hacs"}
     fake_hass = SimpleNamespace(
-        data={"hacs": hacs_base, "automation_api": {"entry": entry}},
-        config_entries=no_entries,
+        data={"automation_api": {"entry": entry}},
+        config_entries=SimpleNamespace(async_entries=lambda d: [1] if d in set_up else []),
     )
 
     def run(coro):
@@ -219,84 +228,77 @@ def main():
         except hacs.HacsError as e:
             return e
 
-    assert "disabled" in str(run(hacs.download(fake_hass, "a/b")))
+    # downloads are opt-in, and the store is asked with the caller's token
+    assert "disabled" in str(run(hacs.download(fake_hass, "t", "a/b")))
     entry.options["allow_hacs"] = True
-    assert "pass `category`" in str(run(hacs.download(fake_hass, "a/b")))
-    assert "invalid category" in str(run(hacs.download(fake_hass, "a/b", category="x")))
-    result = run(hacs.download(fake_hass, "https://github.com/a/b/", category="integration"))
-    assert result["full_name"] == "a/b" and result["restart_required"], result
-    store["a/b"].async_download_repository.assert_awaited_with(ref=None)
-    hacs_base.async_recreate_entities.assert_awaited()
-    hacs_base.async_register_repository = AsyncMock(return_value=None)  # validation fails
-    assert "validation failed" in str(run(hacs.download(fake_hass, "c/d", category="plugin")))
+    assert "access token" in str(run(hacs.download(fake_hass, None, "a/b")))
+    assert not sent, sent
+
+    # HACS: unknown repos are added as custom first
+    rows.append(row("e/f", category="plugin"))
+    assert "pass `category` (one of ['plugin'])" in str(run(hacs.download(fake_hass, "t", "a/b")))
+    assert "validation failed" in str(run(hacs.download(fake_hass, "t", "a/b", category="x")))
+    sent.clear()
+    result = run(hacs.download(fake_hass, "t", "https://github.com/a/b/", category="integration"))
+    assert result["full_name"] == "a/b" and result["installed"] and result["restart_required"], result
+    assert "topics" not in result, result
+    a_b = result["id"]
+    assert [m for m in sent if "list" not in m[0]] == [
+        ("hacs/repositories/add", {"repository": "a/b", "category": "integration"}),
+        ("hacs/repository/download", {"repository": a_b}),
+    ], sent
+    result = run(hacs.download(fake_hass, "t", "old/name", category="integration"))
+    assert result["full_name"] == "new/name" and result["installed"], result
 
     # remove: only installed repos, never HACS itself; gated like downloads
-    store["a/b"].data.installed = True
-    store["a/b"].update_repository = AsyncMock(side_effect=RuntimeError("offline"))
-    store["a/b"].uninstall = AsyncMock()
-    result = run(hacs.remove(fake_hass, "a/b"))
-    assert result["restart_required"], result
-    store["a/b"].uninstall.assert_awaited_once()
-    assert "not installed" in str(run(hacs.remove(fake_hass, "x/y")))
-    store["hacs/integration"] = fake_repo("hacs/integration", installed=True)
-    assert "refusing" in str(run(hacs.remove(fake_hass, "hacs/integration")))
+    result = run(hacs.remove(fake_hass, "t", "A/B"))
+    assert result["restart_required"] and not result["installed"], result
+    assert sent[-2] == ("hacs/repository/remove", {"repository": a_b}), sent[-2]
+    assert "not installed" in str(run(hacs.remove(fake_hass, "t", "x/y")))
+    assert "not installed" in str(run(hacs.remove(fake_hass, "t", "a/b")))
+    rows.append(row("hacs/integration", installed=True))
+    assert "refusing" in str(run(hacs.remove(fake_hass, "t", "hacs/integration")))
     entry.options["allow_hacs"] = False
-    assert "disabled" in str(run(hacs.remove(fake_hass, "a/b")))
+    assert "disabled" in str(run(hacs.remove(fake_hass, "t", "new/name")))
     entry.options["allow_hacs"] = True
 
-    hacs_base.repositories.list_all = [fake_repo("a/b", installed=True), fake_repo("e/f")]
-    assert [r["full_name"] for r in run(hacs.search(fake_hass, query="E/F"))] == ["e/f"]
-    assert len(run(hacs.search(fake_hass, installed=True))) == 1
-    hacs_base.repositories.list_all = [
-        fake_repo("b/old", stars=9, last_updated="2025-01-01T00:00:00Z"),
-        fake_repo("a/new", stars=1, last_updated="2026-09-01T00:00:00Z"),
-        fake_repo("c/none", stars=5),
-    ]
-    names = lambda **kw: [r["full_name"] for r in run(hacs.search(fake_hass, **kw))]
+    names = lambda **kw: [r["full_name"] for r in run(hacs.search(fake_hass, "t", **kw))]
+    assert names(query="E/F") == ["e/f"]
+    assert names(category="plugin") == ["e/f"]
+    assert sent[-1] == ("hacs/repositories/list", {"categories": ["plugin"]}), sent[-1]
+    assert set(names(installed=True)) == {"new/name", "hacs/integration"}
+    rows[:] = []
+    rows.append(row("b/old", stars=9, last_updated="2025-01-01T00:00:00Z"))
+    rows.append(row("a/new", stars=1, last_updated="2026-09-01T00:00:00Z"))
+    rows.append(row("c/none", stars=5))
     assert names() == ["b/old", "c/none", "a/new"]
     assert names(sort="last_updated") == ["a/new", "b/old", "c/none"]
     assert names(sort="name") == ["a/new", "b/old", "c/none"]
-    assert "invalid sort" in str(run(hacs.search(fake_hass, sort="bogus")))
+    assert names(limit=1) == ["b/old"]
+    assert "invalid sort" in str(run(hacs.search(fake_hass, "t", sort="bogus")))
 
-    # Marketplace (2026.11+): preferred over HACS, install + errors as 400s
-    sys.modules["homeassistant.components.marketplace"] = MagicMock()
-    sys.modules["homeassistant.components.marketplace.const"] = MagicMock()
+    # Marketplace (2026.11+): preferred over HACS; its refusals are passed on
+    set_up.add("marketplace")
+    rows.append(row("M/p"))
+    m_p = rows[-1]["id"]
+    result = run(hacs.download(fake_hass, "t", m_p, version="v2"))
+    assert result["full_name"] == "M/p" and result["installed"], result
+    assert sent[-2] == (
+        "marketplace/repository/install",
+        {"repository": m_p, "version": "v2"},
+    ), sent[-2]
+    fail["marketplace/repository/uninstall"] = "m/p is in use (repository_in_use)"
+    assert "in use" in str(run(hacs.remove(fake_hass, "t", "m/p")))
+    fail["marketplace/repositories/list"] = "not loaded (not_loaded)"
+    assert "not_loaded" in str(run(hacs.search(fake_hass, "t")))
+    fail.clear()
+    set_up.clear()
+    assert "neither" in str(run(hacs.search(fake_hass, "t")))
 
-    class MarketplaceManager(MagicMock):
-        pass
-
-    mp = MarketplaceManager()
-    mp.system.disabled = False
-    mp.common.categories = {"integration"}
-    mp.common.skip = set()
-    mp.common.renamed_repositories = {}
-    mp.data.async_write = AsyncMock()
-    mp_repo = fake_repo("m/p")
-    mp_repo.async_install_repository = AsyncMock()
-    mp.repositories.get_by_id.return_value = None
-    mp.repositories.get_by_full_name.side_effect = {"m/p": mp_repo}.get
-    in_use = []
-    fake_hass.config_entries = SimpleNamespace(
-        async_loaded_entries=lambda d: [SimpleNamespace(runtime_data=mp)],
-        async_entries=lambda d: in_use,
-    )
-    async def install(ref):
-        mp_repo.data.installed = True
-
-    mp_repo.async_install_repository.side_effect = install
-    with patch.object(hacs, "async_dispatcher_send") as dispatched:
-        result = run(hacs.download(fake_hass, "m/p", version="v2"))
-    assert result["restart_required"] and dispatched.called, result
-    mp_repo.async_install_repository.assert_awaited_with(ref="v2")
-    mp_repo.async_download_repository.assert_not_awaited()
-    mp.async_register_repository = AsyncMock(return_value=["bad manifest"])
-    assert "bad manifest" in str(run(hacs.download(fake_hass, "x/y", category="integration")))
-    mp_repo.async_install_repository.side_effect = HomeAssistantError("busy")
-    assert str(run(hacs.download(fake_hass, "m/p"))) == "busy"
-    in_use.append(object())
-    assert "in use" in str(run(hacs.remove(fake_hass, "m/p")))
-    mp.system.disabled = True
-    assert "disabled" in str(run(hacs.search(fake_hass)))
+    # the views and tools hand the store the bearer token of the request
+    is_error, text = call("hacs_search", query="M/P")
+    assert not is_error and json.loads(text)["items"][0]["full_name"] == "M/p", text
+    assert tokens[-1] == "t0ken", tokens[-1]
 
     # config entry host: only the address is exposed, and only it is changed
     entry_obj = SimpleNamespace(

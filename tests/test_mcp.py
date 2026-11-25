@@ -98,7 +98,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 69, len(tools)
+    assert len(tools) == 74, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -112,6 +112,11 @@ def main():
     assert schema["properties"]["config"] == {"type": "object"}
     assert tools["list_entities"]["inputSchema"]["properties"]["domain"] == {"type": "string"}
     assert not {"get_managed_package", "upsert_notify_group"} & tools.keys()
+    schema = tools["get_operation_status"]["inputSchema"]
+    assert schema["required"] == ["operation_ids"] and schema["properties"] == {
+        "operation_ids": {"type": "array"},
+        "timeout_seconds": {"type": "number"},
+    }, schema
     assert tools["list_areas"]["description"].startswith("List every area")
 
     mcp.views.log = AsyncMock()
@@ -196,7 +201,7 @@ def main():
     # editors, as the caller; this integration writes no YAML
     from custom_components.automation_api import config_api
 
-    saved, requests = {"automation": {}, "script": {}}, []
+    saved, requests = {"automation": {}, "script": {}, "scene": {}}, []
 
     async def fake_request(hass, token, error, method, path, body=None):
         requests.append((token, method, path, body))
@@ -259,6 +264,29 @@ def main():
     assert call("delete_script", script_id="s1")[0] is False and not saved["script"]
     asyncio.run(config_api.get(HASS, "t", "script", "a/b"))
     assert requests[-1][2] == "/api/config/script/config/a%2Fb", requests[-1]
+
+    # scenes go the same way; their entity id comes from the registry, since
+    # Home Assistant names the entity after the scene and not after its id
+    registry_stub = mcp.views.entity_registry
+    mcp.views.entity_registry = SimpleNamespace(
+        async_get=lambda hass: SimpleNamespace(
+            async_get_entity_id=lambda domain, platform, unique_id: (
+                "scene.movie_night" if (domain, platform, unique_id) == ("scene", "homeassistant", "m1") else None
+            )
+        )
+    )
+    scene = {"name": "Movie night", "entities": {"light.tv": {"state": "on", "brightness": 80}}}
+    is_error, text = call("create_or_update_scene", scene_id="m1", config=scene)
+    assert not is_error and json.loads(text) == {
+        "status": "ok", "id": "m1", "entity_id": "scene.movie_night",
+    }, text
+    assert requests[-1] == ("t0ken", "POST", "/api/config/scene/config/m1", scene)
+    HASS.services.async_call.assert_awaited_with("scene", "reload", {}, blocking=True)
+    assert json.loads(call("get_scene", scene_id="m1")[1]) == scene
+    assert call("delete_scene", scene_id="m1")[0] is False and not saved["scene"]
+    is_error, text = call("delete_scene", scene_id="m1")
+    assert is_error and "HTTP 404" in text, text
+    mcp.views.entity_registry = registry_stub
 
     # template entities and history_stats sensors are config entries: made
     # with the config flow of their integration, changed with its options flow
@@ -871,6 +899,130 @@ def main():
         pass
     else:
         raise AssertionError("non-admin was not rejected")
+
+    # operations: service calls whose effect can be read back afterwards
+    from custom_components.automation_api import operations
+
+    contexts = iter(range(1000))
+    clock = [100]
+    operations.Context = lambda user_id: SimpleNamespace(id=next(contexts), user_id=user_id)
+    operations.dt_util = SimpleNamespace(utcnow=lambda: clock[0])
+    operations.SupportsResponse = SimpleNamespace(NONE="none")
+
+    world, made, slow = {}, [], {"light.slow"}
+    areas = {"garden": ["light.g1", "light.g2"]}
+
+    def write(entity_id, state, context):
+        clock[0] += 1
+        world[entity_id] = SimpleNamespace(
+            entity_id=entity_id, state=state, context=context, last_updated=clock[0]
+        )
+
+    async def fake_service(domain, service, data, blocking, context, return_response):
+        made.append((domain, service, data))
+        if service == "explode":
+            raise ValueError("boom")
+        named = data.get("entity_id") or []
+        named = named.split(",") if isinstance(named, str) else named
+        for entity_id in [e.strip() for e in named] + areas.get(data.get("area_id"), []):
+            if entity_id not in slow:  # a slow device answers after the call
+                write(entity_id, "on" if service == "turn_on" else "off", context)
+        return {"answer": 42} if return_response else None
+
+    HASS.data = {}
+    HASS.services = SimpleNamespace(
+        async_call=fake_service,
+        has_service=lambda domain, service: service != "no_such",
+        supports_response=lambda domain, service: "only" if service == "ask" else "none",
+    )
+    HASS.states = SimpleNamespace(async_all=lambda: list(world.values()), get=world.get)
+
+    def status(*ids, timeout=0):
+        is_error, text = call("get_operation_status", operation_ids=list(ids), timeout_seconds=timeout)
+        assert not is_error, text
+        return json.loads(text)["operations"]
+
+    is_error, text = call(
+        "call_service", domain="light", service="turn_on", data={"entity_id": "light.a"}
+    )
+    first = json.loads(text)
+    assert not is_error and first["status"] == "ok" and first["response"] is None, text
+    assert status(first["operation_id"]) == [
+        {
+            "operation_id": first["operation_id"], "domain": "light", "service": "turn_on",
+            "status": "completed", "error": None,
+            "entities": [{"entity_id": "light.a", "state": "on", "changed": True}],
+        }
+    ]
+    assert json.loads(call("call_service", domain="x", service="ask")[1])["response"] == {"answer": 42}
+
+    # several calls at once: each is reported, a failing one stops nothing
+    is_error, text = call(
+        "bulk_control",
+        operations=[
+            {"domain": "light", "service": "turn_off", "data": {"entity_id": "light.a, light.b"}},
+            {"domain": "light", "service": "explode", "data": {"entity_id": "light.c"}},
+            {"service": "turn_on"},
+            {"domain": "light", "service": "turn_on", "data": {"area_id": "garden"}},
+            {"domain": "light", "service": "turn_on", "data": {"entity_id": ["light.slow"]}},
+        ],
+    )
+    bulk = json.loads(text)
+    assert not is_error and bulk["status"] == "failed", text
+    off, exploded, invalid, garden, slow_one = bulk["results"]
+    assert [r["status"] for r in bulk["results"]] == ["ok", "failed", "failed", "ok", "ok"]
+    assert "boom" in exploded["error"] and invalid["operation_id"] is None, bulk
+    assert world["light.a"].state == "off" and world["light.b"].state == "off"
+    by_id = {
+        o["operation_id"]: o
+        for o in status(off["operation_id"], exploded["operation_id"], garden["operation_id"],
+                        slow_one["operation_id"], "nope")
+    }
+    assert by_id[off["operation_id"]]["status"] == "completed"
+    assert [e["entity_id"] for e in by_id[off["operation_id"]]["entities"]] == ["light.a", "light.b"]
+    failed = by_id[exploded["operation_id"]]
+    assert failed["status"] == "failed" and "boom" in failed["error"], failed
+    assert failed["entities"] == [{"entity_id": "light.c", "state": None, "changed": False}]
+    # entities reached through an area are found by the context of the call
+    assert by_id[garden["operation_id"]]["status"] == "completed"
+    assert [e["entity_id"] for e in by_id[garden["operation_id"]]["entities"]] == ["light.g1", "light.g2"]
+    assert by_id["nope"] == {"operation_id": "nope", "status": "unknown"}
+    # a named entity that has not followed yet: unconfirmed, until it does
+    assert by_id[slow_one["operation_id"]]["status"] == "unconfirmed"
+    assert by_id[slow_one["operation_id"]]["entities"] == [
+        {"entity_id": "light.slow", "state": None, "changed": False}
+    ]
+    naps = []
+
+    async def nap(seconds):
+        naps.append(seconds)
+        if len(naps) == 3:  # the device answers, without the context of the call
+            write("light.slow", "on", SimpleNamespace(id="its own"))
+
+    operations.asyncio = SimpleNamespace(sleep=nap, gather=asyncio.gather)
+    assert status(slow_one["operation_id"], timeout=0.5)[0]["status"] == "unconfirmed"
+    assert len(naps) == 2, naps
+    late = status(slow_one["operation_id"], timeout=30)[0]
+    assert late["status"] == "completed" and late["entities"][0]["state"] == "on", late
+    assert len(naps) == 3, naps
+
+    # a failing single call is a tool error that names its operation
+    is_error, text = call("call_service", domain="light", service="explode")
+    assert is_error and "boom" in text and "operation_id" in text, text
+    is_error, text = call("call_service", domain="light", service="no_such")
+    assert is_error and "the service light.no_such does not exist" in text, text
+    # one after the other, in the given order
+    made.clear()
+    call(
+        "bulk_control", parallel=False,
+        operations=[{"domain": "a", "service": "turn_on"}, {"domain": "b", "service": "turn_on"}],
+    )
+    assert [m[0] for m in made] == ["a", "b"], made
+    # only the latest operations are remembered
+    operations._KEPT = 2
+    kept = json.loads(call("call_service", domain="a", service="turn_on")[1])["operation_id"]
+    assert status(first["operation_id"])[0]["status"] == "unknown"
+    assert status(kept)[0]["status"] == "completed" and len(HASS.data["automation_api"]["operations"]) == 2
 
     print("ok")
 

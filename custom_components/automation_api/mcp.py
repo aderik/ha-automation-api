@@ -10,6 +10,7 @@ logging and reloads live in one place.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 from pathlib import Path
@@ -17,13 +18,14 @@ from typing import Any
 
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
-from homeassistant.core import Context, HomeAssistant, SupportsResponse
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.json import json_dumps
 
 from . import http as views
+from . import operations as operations_mod
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "2.0.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "2.1.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -242,7 +244,7 @@ async def get_automation_api_log(c) -> Any:
 async def get_script(c, script_id: str) -> Any:
     """Return the stored config of a script by its id (the part after
     'script.'), e.g. {"alias": ..., "sequence": [...], "mode": ...}."""
-    return await c(views.ScriptItemView, "get", script_id=script_id)
+    return await c(views.ScriptItemView, "get", item_id=script_id)
 
 
 @tool
@@ -259,13 +261,51 @@ async def create_or_update_script(c, script_id: str, config: dict[str, Any]) -> 
     A script with `fields` that calls several notify services is the way to
     get a notify group that passes `data` on.
     """
-    return await c(views.ScriptItemView, "put", body=config, script_id=script_id)
+    return await c(views.ScriptItemView, "put", body=config, item_id=script_id)
 
 
 @tool
 async def delete_script(c, script_id: str) -> Any:
     """Delete a script by its id, as the script editor does."""
-    return await c(views.ScriptItemView, "delete", script_id=script_id)
+    return await c(views.ScriptItemView, "delete", item_id=script_id)
+
+
+# ---------------------------------------------------------------------------
+# Scenes
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def get_scene(c, scene_id: str) -> Any:
+    """Return the stored config of a scene by its id, e.g.
+    {"id": ..., "name": ..., "entities": {...}}. Only scenes made in the UI
+    or here have an id; it is the `id` attribute of the scene's state."""
+    return await c(views.SceneItemView, "get", item_id=scene_id)
+
+
+@tool
+async def create_or_update_scene(c, scene_id: str, config: dict[str, Any]) -> Any:
+    """Create or replace a scene, as the scene editor saves it: Home
+    Assistant validates the config, stores it and reloads the scenes.
+
+    Args:
+        scene_id: Id of the scene; any stable string, e.g. 'movie_night'.
+        config: {"name": "Movie night", "entities": {"light.tv_lamp":
+            {"state": "on", "brightness": 80}, "cover.blinds": "closed"},
+            "icon": "mdi:movie"}. `entities` maps each entity to the state,
+            or the state with attributes, the scene sets it to.
+
+    The result holds the scene's `entity_id`, which Home Assistant derives
+    from `name`. Activate the scene with `call_service`: domain 'scene',
+    service 'turn_on', data {"entity_id": ...}.
+    """
+    return await c(views.SceneItemView, "put", body=config, item_id=scene_id)
+
+
+@tool
+async def delete_scene(c, scene_id: str) -> Any:
+    """Delete a scene by its id, as the scene editor does."""
+    return await c(views.SceneItemView, "delete", item_id=scene_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1140,22 +1180,76 @@ async def call_service(
     Example: domain='light', service='turn_on',
     data={'entity_id': 'light.kitchen', 'brightness': 200}.
 
-    Returns {"status": "ok", "response": ...}; `response` is the service's
-    response data for services that return one, otherwise null.
+    Returns {"status": "ok", "response": ..., "operation_id": ...};
+    `response` is the service's response data for services that return one,
+    otherwise null. "ok" means Home Assistant accepted the call; pass
+    `operation_id` to `get_operation_status` to see whether the entities
+    followed. For several calls at once, use `bulk_control`.
     """
-    services = c.hass.services
-    wants_response = (
-        services.supports_response(domain, service) is not SupportsResponse.NONE
+    operation, response = await operations_mod.call(
+        c.hass, c.request["hass_user"].id, domain, service, data
     )
-    response = await services.async_call(
-        domain,
-        service,
-        data or {},
-        blocking=True,
-        context=Context(user_id=c.request["hass_user"].id),
-        return_response=wants_response,
+    if operation.error:
+        raise RuntimeError(f"{operation.error} (operation_id {operation.id})")
+    return {"status": "ok", "response": response, "operation_id": operation.id}
+
+
+@tool
+async def bulk_control(
+    c, operations: list[dict[str, Any]], parallel: bool = True
+) -> Any:
+    """Make several service calls in one go, e.g. to control many devices.
+
+    Args:
+        operations: The calls, each {"domain": "light", "service":
+            "turn_on", "data": {"entity_id": "light.kitchen",
+            "brightness": 200}}; `data` is what `call_service` takes.
+        parallel: Run them at the same time (default) or, when false, one
+            after the other in the given order.
+
+    One service call can already aim at many entities (`entity_id` as a
+    list, or `area_id`); use this for calls that differ in service or data.
+    A call that fails does not stop the others. Returns {"results": [...]}
+    in the given order, each with `status` ("ok" or "failed"), `error`,
+    `response` and an `operation_id` for `get_operation_status`.
+    """
+    results = await operations_mod.call_many(
+        c.hass, c.request["hass_user"].id, operations, parallel
     )
-    return {"status": "ok", "response": response}
+    return {
+        "status": "ok" if all(r["status"] == "ok" for r in results) else "failed",
+        "results": results,
+    }
+
+
+@tool
+async def get_operation_status(
+    c, operation_ids: list[str], timeout_seconds: float = 8
+) -> Any:
+    """Tell whether service calls made with `call_service` or `bulk_control`
+    took effect, by their `operation_id`.
+
+    Per operation: `status` and `entities`, each with its current `state`
+    and `changed` (its state was written since the call). The entities are
+    those the call named in `entity_id`, plus those whose state it changed.
+    - "completed": the call returned and every entity it named has changed.
+    - "unconfirmed": the call returned, but a named entity has not changed.
+      It may have been in that state already, or its device is slow or
+      unreachable; check `state`.
+    - "failed": the service raised an error (`error`).
+    - "unknown": no such operation; they are kept in memory, not across a
+      restart.
+
+    `timeout_seconds` (default 8, at most 60) is how long to wait for
+    unconfirmed entities to follow; 0 answers at once.
+    """
+    found = await asyncio.gather(
+        *(
+            operations_mod.status(c.hass, operation_id, timeout_seconds)
+            for operation_id in operation_ids
+        )
+    )
+    return {"operations": list(found)}
 
 
 # ---------------------------------------------------------------------------

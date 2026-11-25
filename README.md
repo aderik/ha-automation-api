@@ -10,8 +10,9 @@
 A Home Assistant custom integration that lets AI agents (Claude, Cursor or any
 other MCP client) and scripts (n8n, Make, CI pipelines) configure Home
 Assistant. It exposes a REST API for what the built-in API leaves out:
-automations, scripts, helpers, template entities, Lovelace dashboards,
-registries, integrations, the Marketplace (HACS) and recorder history.
+automations, scripts, scenes, helpers, template entities, Lovelace
+dashboards, registries, integrations, the Marketplace (HACS) and recorder
+history.
 
 It writes no configuration files of its own. Everything is handed to the
 part of Home Assistant that owns it, the way the UI does: the config API of
@@ -26,7 +27,9 @@ process to run.
 ## Features
 
 - Create, edit, delete and trigger automations, and create, edit and delete
-  scripts, saved exactly as their editors in the UI save them
+  scripts and scenes, saved exactly as their editors in the UI save them
+- Control devices: any service, several calls at once, and a check on
+  whether the entities followed
 - Helpers (`input_*`), template entities and `history_stats` sensors as
   ordinary UI helpers
 - Storage-mode Lovelace dashboards: dashboards, views and cards
@@ -139,6 +142,19 @@ curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json
          "target":{"entity_id":"input_datetime.last_watered"},
          "data":{"timestamp":"{{ now().timestamp() }}"}}]}'
 ```
+
+### Scenes
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` `PUT` `DELETE` | `/api/automation_api/scenes/{id}` | Read, create or replace (body: the scene config) or delete a scene |
+
+The body is what the scene editor stores: `{"name": "Movie night",
+"entities": {"light.tv_lamp": {"state": "on", "brightness": 80},
+"cover.blinds": "closed"}, "icon": "mdi:movie"}`. `{id}` is the scene's id,
+any stable string; Home Assistant derives the entity id from `name`, and the
+answer to a `PUT` holds it. Scenes go through the config API of the scene
+editor, like scripts. Activate one with the `scene.turn_on` service.
 
 ### Helpers
 
@@ -417,9 +433,24 @@ at a glance:
 ## MCP server
 
 The integration serves an MCP server over Streamable HTTP at
-`/api/automation_api/mcp`. It offers 69 tools: one for every REST endpoint,
-plus `get_state` and `call_service`. It uses the same administrator bearer
+`/api/automation_api/mcp`. It offers 74 tools: one for every REST endpoint,
+plus four for controlling devices. It uses the same administrator bearer
 token. A tool runs its REST endpoint in-process, so both behave the same.
+
+The four tools without a REST endpoint:
+
+| Tool | What it does |
+|---|---|
+| `get_state` | The current state and attributes of an entity |
+| `call_service` | Call any Home Assistant service; the answer holds an `operation_id` |
+| `bulk_control` | Several service calls in one go, at the same time or in order; a failing call does not stop the others, and each gets its own `operation_id` |
+| `get_operation_status` | Whether those calls took effect: per operation `completed`, `unconfirmed` or `failed`, with the state of each entity the call named or changed. It can wait a few seconds for slow devices |
+
+A service call that returns without an error only means Home Assistant
+handed it to the integration. `get_operation_status` looks at the entities
+afterwards: it reports the ones the call named in `entity_id` and the ones
+whose state it changed, found through the context Home Assistant attaches to
+the call. Operations are kept in memory, the latest 500, until a restart.
 
 Claude Code:
 
@@ -448,12 +479,12 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Runs | Inside HA (custom integration) | Inside HA (core integration) | Inside HA (custom component), or as add-on, Docker or `uvx` |
 | Authentication | Admin access token | OAuth or token | Admin token or its own account; secret URL or HA sign-in for clients |
 | Entity scope | Everything | Only entities exposed to Assist | Everything |
-| Control devices | `call_service` | Assist intents | Yes |
+| Control devices | Yes | Assist intents | Yes |
 | REST API besides MCP | Yes | No | No |
 | How changes are made | Through Home Assistant's own APIs, as the caller; no files written | Assist intents | Through Home Assistant's APIs; file and YAML tools are opt-in |
-| Automations | Create, edit, delete, trigger | No | Yes, plus traces |
-| Scripts | Create, edit, delete | No | Yes |
-| Scenes, blueprints | No | No | Yes |
+| Automations | Yes | No | Yes |
+| Scripts and scenes | Yes | No | Yes |
+| Blueprints | No | No | Yes |
 | `input_*` helpers | Yes, as UI helpers | No | Yes, as UI helpers |
 | Template entities, `history_stats` | Yes, as UI helpers | No | Template helpers |
 | Other helpers (groups, `statistics`, ...) | Through the config flow tools | No | Yes |
@@ -467,7 +498,7 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs, plus logs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
 | Safeguards | Admin only, store changes opt-in, Home Assistant validates every change, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 69 | Depends on Assist | 87 |
+| Tools | 74 | Depends on Assist | 87 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,

@@ -291,22 +291,26 @@ class _AuthedView(HomeAssistantView):
         return data, None
 
 
-class ScriptItemView(_AuthedView):
-    url = "/api/automation_api/scripts/{script_id}"
-    name = "api:automation_api:script"
+class _EditorItemView(_AuthedView):
+    """A script or a scene, through the config API of its editor."""
 
-    async def get(self, request, script_id):
+    domain: str
+
+    def _entity_id(self, hass: HomeAssistant, item_id: str) -> str | None:
+        raise NotImplementedError
+
+    async def get(self, request, item_id):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
         try:
-            config = await config_api.get(hass, _bearer(request), "script", script_id)
+            config = await config_api.get(hass, _bearer(request), self.domain, item_id)
         except ValueError as e:
             return self.json({"error": str(e)}, status_code=400)
         if config is None:
             return self.json({"error": "not found"}, status_code=404)
         return self.json(config)
 
-    async def put(self, request, script_id):
+    async def put(self, request, item_id):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
         data, err = await self._json_body(request)
@@ -314,28 +318,49 @@ class ScriptItemView(_AuthedView):
             return err
         if not isinstance(data, dict):
             return self.json({"error": "body must be a dict"}, status_code=400)
-        await log(hass, f"HTTP create/update script {script_id}")
+        await log(hass, f"HTTP create/update {self.domain} {item_id}")
         try:
-            await config_api.save(hass, _bearer(request), "script", script_id, data)
+            await config_api.save(hass, _bearer(request), self.domain, item_id, data)
         except ValueError as e:
             return self.json({"error": str(e)}, status_code=400)
         return self.json(
-            {"status": "ok", "id": script_id, "entity_id": f"script.{script_id}"}
+            {"status": "ok", "id": item_id, "entity_id": self._entity_id(hass, item_id)}
         )
 
-    async def delete(self, request, script_id):
+    async def delete(self, request, item_id):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        await log(hass, f"HTTP delete script {script_id}")
+        await log(hass, f"HTTP delete {self.domain} {item_id}")
         try:
             removed = await config_api.delete(
-                hass, _bearer(request), "script", script_id
+                hass, _bearer(request), self.domain, item_id
             )
         except ValueError as e:
             return self.json({"error": str(e)}, status_code=400)
         if not removed:
             return self.json({"error": "not found"}, status_code=404)
-        return self.json({"status": "ok", "id": script_id})
+        return self.json({"status": "ok", "id": item_id})
+
+
+class ScriptItemView(_EditorItemView):
+    url = "/api/automation_api/scripts/{item_id}"
+    name = "api:automation_api:script"
+    domain = "script"
+
+    def _entity_id(self, hass: HomeAssistant, item_id: str) -> str | None:
+        return f"script.{item_id}"
+
+
+class SceneItemView(_EditorItemView):
+    url = "/api/automation_api/scenes/{item_id}"
+    name = "api:automation_api:scene"
+    domain = "scene"
+
+    def _entity_id(self, hass: HomeAssistant, item_id: str) -> str | None:
+        # Home Assistant names the entity after the scene, not after its id
+        return entity_registry.async_get(hass).async_get_entity_id(
+            "scene", "homeassistant", item_id
+        )
 
 
 class HelpersListView(_AuthedView):
@@ -1494,6 +1519,7 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiYamlView)
     hass.http.register_view(AutomationApiLogView)
     hass.http.register_view(ScriptItemView)
+    hass.http.register_view(SceneItemView)
     hass.http.register_view(HelpersListView)
     hass.http.register_view(HelperItemView)
     hass.http.register_view(TemplateListView)

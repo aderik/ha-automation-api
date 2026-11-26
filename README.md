@@ -616,7 +616,7 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | HACS / Marketplace | Search, install and remove through either; changes off by default | No | Yes |
 | Energy dashboard settings | Read, validate and change, costs included; dry run and stale-read check | No | Yes, with a dry run |
 | History, statistics, traces and logs | Yes | No | Yes |
-| Repair statistics (adjust a sum, import hours) | Yes, with a dry run | No | No |
+| Repair statistics (adjust a sum, import hours) | Yes | No | Yes |
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
 | Safeguards | Admin only, store changes opt-in, Home Assistant validates every change, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |

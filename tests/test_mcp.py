@@ -98,7 +98,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 80, len(tools)
+    assert len(tools) == 83, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -900,8 +900,8 @@ def main():
     else:
         raise AssertionError("non-admin was not rejected")
 
-    # what happened: statistics, traces, the logbook and the system log are
-    # read with Home Assistant's own websocket commands, as the caller
+    # what happened: traces, the logbook and the system log are read with
+    # Home Assistant's own websocket commands, as the caller
     from datetime import datetime, timedelta, timezone
 
     from custom_components.automation_api import history
@@ -911,27 +911,11 @@ def main():
         utcnow=lambda: NOW, parse_datetime=datetime.fromisoformat, as_utc=lambda value: value
     )
     asked = []
-    hour = 3600 * 1000
-    t0 = int(NOW.timestamp() * 1000) - 2 * hour
 
     @asynccontextmanager
     async def fake_history(hass, token, error):
         async def command(type_, **fields):
             asked.append((token, type_, fields))
-            if type_ == "recorder/list_statistic_ids":
-                return [
-                    {"statistic_id": "sensor.temp", "name": None, "has_mean": True, "has_sum": False,
-                     "display_unit_of_measurement": "°C", "unit_class": "temperature", "source": "recorder", "mean_type": 1},
-                    {"statistic_id": "energy:grid", "name": "Grid import", "has_mean": False, "has_sum": True,
-                     "display_unit_of_measurement": "kWh", "unit_class": "energy", "source": "energy"},
-                ]
-            if type_ == "recorder/statistics_during_period":
-                return {
-                    "sensor.temp": [
-                        {"start": t0, "end": t0 + hour, "mean": 20.5, "min": 20.0, "max": 21.0, "last_reset": None},
-                        {"start": t0 + hour, "end": t0 + 2 * hour, "mean": 21.5, "min": 21.0, "max": 22.0, "last_reset": None},
-                    ]
-                }
             if type_ == "trace/list":
                 return [
                     {"run_id": "old", "item_id": "a1", "timestamp": {"start": "2026-11-26T08:00:00+00:00"}},
@@ -961,34 +945,6 @@ def main():
         is_error, text = call(tool_name, **arguments)
         assert not is_error, text
         return json.loads(text)
-
-    ids = read("list_statistics", search="GRID", statistic_type="sum")["items"]
-    assert ids == [
-        {"statistic_id": "energy:grid", "name": "Grid import", "unit_of_measurement": "kWh",
-         "unit_class": "energy", "has_mean": False, "has_sum": True, "source": "energy"}
-    ], ids
-    assert asked[-1] == ("t0ken", "recorder/list_statistic_ids", {"statistic_type": "sum"})
-    assert len(read("list_statistics")["items"]) == 2 and asked[-1][2] == {}
-    is_error, text = call("list_statistics", statistic_type="bogus")
-    assert is_error and "HTTP 400" in text, text
-
-    stats = read("get_statistics", statistic_id="sensor.temp, sensor.other", hours=2, types="mean,max")
-    assert stats["period"] == "hour" and stats["start"] == "2026-11-26T10:00:00+00:00", stats
-    assert stats["items"]["sensor.temp"][0] == {
-        "start": "2026-11-26T10:00:00+00:00", "end": "2026-11-26T11:00:00+00:00",
-        "mean": 20.5, "min": 20.0, "max": 21.0,
-    }, stats["items"]
-    assert asked[-1][2] == {
-        "start_time": "2026-11-26T10:00:00+00:00", "end_time": "2026-11-26T12:00:00+00:00",
-        "statistic_ids": ["sensor.temp", "sensor.other"], "period": "hour", "types": ["mean", "max"],
-    }, asked[-1]
-    # an answer too large to be useful is refused before it is asked for
-    before = len(asked)
-    is_error, text = call("get_statistics", statistic_id="sensor.temp", period="5minute", days=30)
-    assert is_error and "about 8640 rows" in text and len(asked) == before, text
-    assert not call("get_statistics", statistic_id="sensor.temp", period="day", days=365)[0]
-    is_error, text = call("get_statistics", statistic_id="sensor.temp", period="decade")
-    assert is_error and "period must be one of" in text, text
 
     # traces: by the id of the automation, or by its entity id
     HASS.states = SimpleNamespace(
@@ -1033,6 +989,279 @@ def main():
     assert [e["logger"] for e in read("get_system_log", search="BOOM")["items"]] == ["homeassistant.core"]
     newest = read("get_system_log", limit=1)
     assert newest["total"] == 2 and [e["level"] for e in newest["items"]] == ["WARNING"], newest
+
+    # long-term statistics: read as compact tables in local time, and two
+    # tools that repair them, which only describe the change unless told to
+    from zoneinfo import ZoneInfo
+
+    from custom_components.automation_api import stats
+
+    AMS = ZoneInfo("Europe/Amsterdam")
+
+    def parse(text):
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+    stats.dt_util = SimpleNamespace(
+        utcnow=lambda: NOW,
+        parse_datetime=parse,
+        parse_date=lambda text: None,
+        as_utc=lambda t: (t.replace(tzinfo=AMS) if t.tzinfo is None else t).astimezone(timezone.utc),
+        as_local=lambda t: t.astimezone(AMS),
+        utc_from_timestamp=lambda seconds: datetime.fromtimestamp(seconds, timezone.utc),
+    )
+    H = 3600_000
+    ms = lambda text: int(stats.parse_time(text, "t").timestamp() * 1000)
+    METADATA = {
+        "sensor.gas": {
+            "statistic_id": "sensor.gas", "source": "recorder", "name": None, "has_sum": True,
+            # stored in another unit than it is shown in
+            "has_mean": False, "mean_type": 0, "unit_class": "volume",
+            "statistics_unit_of_measurement": "ft³", "display_unit_of_measurement": "m³",
+        },
+        "sensor.temp": {
+            "statistic_id": "sensor.temp", "source": "recorder", "name": "Temp", "has_sum": False,
+            "has_mean": True, "mean_type": 1, "unit_class": "temperature",
+            "statistics_unit_of_measurement": "°C", "display_unit_of_measurement": "°C",
+        },
+    }
+    # the hourly rows the recorder holds for sensor.gas: start -> state, sum
+    gas = {ms("2026-11-20T10:00") + i * H: {"state": 100.0 + i, "sum": 50.0 + i} for i in range(8)}
+    recorder, pending = [], []  # commands sent; writes the recorder still has to do
+
+    def hourly(start, end, types):
+        rows, previous = [], None
+        for at in sorted(gas):
+            row = {"start": at, "end": at + H, **gas[at]}
+            row["change"] = None if previous is None else row["sum"] - previous
+            previous = row["sum"]
+            if start <= at < end:
+                rows.append({k: v for k, v in row.items() if k in ("start", "end", *types)})
+        return rows
+
+    @asynccontextmanager
+    async def fake_recorder(hass, token, error):
+        async def command(type_, **fields):
+            recorder.append((token, type_, fields))
+            if type_ == "recorder/list_statistic_ids":
+                return list(METADATA.values())
+            if type_ == "recorder/get_statistics_metadata":
+                wanted = fields.get("statistic_ids")
+                return [m for i, m in METADATA.items() if not wanted or i in wanted]
+            if type_ == "recorder/statistics_during_period":
+                if pending:  # the recorder works through its queue between reads
+                    pending.pop(0)()
+                if fields["period"] == "hour":
+                    start, end = ms(fields["start_time"]), ms(fields["end_time"])
+                    return {"sensor.gas": hourly(start, end, fields["types"])}
+                day = ms("2026-11-01T00:00")
+                return {
+                    i: [
+                        {"start": day + n * 24 * H, "end": day + (n + 1) * 24 * H,
+                         "change": 1.23456 + n, "sum": 10 + n, "state": None}
+                        for n in range(3)
+                    ]
+                    for i in fields["statistic_ids"]
+                }
+            if type_ == "recorder/adjust_sum_statistics":
+                def adjust():
+                    for at in gas:
+                        if at >= ms(fields["start_time"]):
+                            gas[at]["sum"] += fields["adjustment"]
+                pending.extend([lambda: None, adjust])
+                return None
+            if type_ == "recorder/import_statistics":
+                def write():
+                    for row in fields["stats"]:
+                        gas[ms(row["start"])] = {k: row[k] for k in ("state", "sum") if k in row}
+                pending.extend([lambda: None, write])
+                return None
+            raise AssertionError(type_)
+
+        yield command
+
+    stats._connect = fake_recorder
+
+    async def no_wait(seconds):
+        pass
+
+    stats.asyncio = SimpleNamespace(sleep=no_wait)
+
+    listed = read("list_statistics", search="GAS", statistic_type="sum")["items"]
+    assert listed == [
+        {"statistic_id": "sensor.gas", "name": None, "unit": "m³", "unit_class": "volume",
+         "source": "recorder", "has_sum": True, "mean_type": 0}
+    ], listed
+    assert recorder[-1] == ("t0ken", "recorder/list_statistic_ids", {"statistic_type": "sum"})
+    assert len(read("list_statistics")["items"]) == 2
+    is_error, text = call("list_statistics", statistic_type="bogus")
+    assert is_error and "HTTP 400" in text, text
+    assert read("get_statistics_metadata", statistic_ids=["sensor.temp"])["items"] == [METADATA["sensor.temp"]]
+    assert recorder[-1][2] == {"statistic_ids": ["sensor.temp"]}
+    assert len(read("get_statistics_metadata")["items"]) == 2 and recorder[-1][2] == {}
+
+    # get_statistics: a table per id, local times, three decimals; the window
+    # starts at the start of its period on the local clock
+    table = read("get_statistics", statistic_ids=["sensor.gas", "sensor.other"], start="2026-11-01T14:30", end="2026-11-04")
+    assert recorder[-1][2] == {
+        "start_time": "2026-10-31T23:00:00+00:00", "end_time": "2026-11-03T23:00:00+00:00",
+        "statistic_ids": ["sensor.gas", "sensor.other"], "period": "day",
+        "types": ["change", "sum", "state"],
+    }, recorder[-1]
+    assert table["period"] == "day" and table["start"] == "2026-11-01T00:00:00+01:00", table
+    assert table["truncated"] is False and "next_start" not in table
+    assert table["statistics"]["sensor.gas"] == {
+        "columns": ["start", "change", "sum", "state"],
+        "rows": [
+            ["2026-11-01T00:00:00+01:00", 1.235, 10, None],
+            ["2026-11-02T00:00:00+01:00", 2.235, 11, None],
+            ["2026-11-03T00:00:00+01:00", 3.235, 12, None],
+        ],
+    }, table["statistics"]["sensor.gas"]
+    # a page holds whole periods for every id; the next one starts where it ends
+    page = read("get_statistics", statistic_ids=["sensor.gas", "sensor.other"], days=3, max_rows=4,
+                types=["change"], units={"volume": "L"})
+    assert page["truncated"] is True and page["next_start"] == "2026-11-03T00:00:00+01:00", page
+    assert [len(t["rows"]) for t in page["statistics"].values()] == [2, 2]
+    assert page["statistics"]["sensor.other"]["columns"] == ["start", "change"]
+    assert recorder[-1][2]["units"] == {"volume": "L"} and recorder[-1][2]["types"] == ["change"]
+    for arguments, message in (
+        ({"statistic_ids": ["sensor.gas"], "period": "decade"}, "period must be one of"),
+        ({"statistic_ids": ["sensor.gas"], "types": ["average"]}, "unknown types ['average']"),
+        ({"statistic_ids": [], "days": 1}, "missing statistic_ids"),
+        ({"statistic_ids": ["sensor.gas"], "start": "yesterday"}, "could not parse 'start'"),
+        ({"statistic_ids": ["sensor.gas"], "period": "5minute", "start": "2000-01-01"}, "use a shorter"),
+    ):
+        is_error, text = call("get_statistics", **arguments)
+        assert is_error and message in text, (arguments, text)
+    # the window follows the local clock, also across a change of the clocks
+    floor = lambda period, text: stats.window(period, start=text)[0].astimezone(AMS).isoformat()
+    assert floor("hour", "2026-11-26T12:34:56") == "2026-11-26T12:00:00+01:00"
+    assert floor("5minute", "2026-11-26T12:34:56") == "2026-11-26T12:30:00+01:00"
+    assert floor("week", "2026-11-26T12:34") == "2026-11-23T00:00:00+01:00"  # a Monday
+    assert floor("month", "2026-07-15") == "2026-07-01T00:00:00+02:00"
+    assert floor("year", "2026-07-15") == "2026-01-01T00:00:00+01:00"
+    start, end = stats.window("hour", start="2026-03-29", end="2026-03-30")
+    assert (end - start) == timedelta(hours=23)  # summer time starts
+    start, end = stats.window("hour", start="2026-10-25", end="2026-10-26")
+    assert (end - start) == timedelta(hours=25)
+    assert stats.window("month")[0] == stats._floor(NOW - timedelta(days=365), "month")
+
+    # adjust_statistic_sum: a dry run by default, showing the hours around it
+    def writes():
+        return [r for r in recorder if r[1] in ("recorder/adjust_sum_statistics", "recorder/import_statistics")]
+
+    plan = read("adjust_statistic_sum", statistic_id="sensor.gas", start_time="2026-11-20T13:00", adjustment=-10)
+    assert plan["dry_run"] is True and plan["unit"] == "m³" and not writes(), plan
+    assert plan["before"] == {
+        "columns": ["start", "state", "sum", "change"],
+        "rows": [
+            ["2026-11-20T11:00:00+01:00", 101.0, 51.0, 1.0],
+            ["2026-11-20T12:00:00+01:00", 102.0, 52.0, 1.0],
+            ["2026-11-20T13:00:00+01:00", 103.0, 53.0, 1.0],
+            ["2026-11-20T14:00:00+01:00", 104.0, 54.0, 1.0],
+            ["2026-11-20T15:00:00+01:00", 105.0, 55.0, 1.0],
+            ["2026-11-20T16:00:00+01:00", 106.0, 56.0, 1.0],
+        ],
+    }, plan["before"]
+    # from that hour on every sum shifts; only that hour's own use changes
+    assert [r[2:] for r in plan["after_calculated"]["rows"]] == [
+        [51.0, 1.0], [52.0, 1.0], [43.0, -9.0], [44.0, 1.0], [45.0, 1.0], [46.0, 1.0],
+    ], plan["after_calculated"]
+    read_back = [r for r in recorder if r[1] == "recorder/statistics_during_period"][-1][2]
+    assert read_back["units"] == {"volume": "m³"} and read_back["period"] == "hour", read_back
+    for arguments, message in (
+        ({"statistic_id": "sensor.gas", "start_time": "2026-11-20T13:30", "adjustment": 1}, "start of an hour"),
+        ({"statistic_id": "sensor.temp", "start_time": "2026-11-20T13:00", "adjustment": 1}, "has no sum"),
+        ({"statistic_id": "sensor.nope", "start_time": "2026-11-20T13:00", "adjustment": 1}, "there is no statistic"),
+        ({"statistic_id": "sensor.gas", "start_time": "2026-11-20T13:00", "adjustment": True}, "must be a number"),
+    ):
+        is_error, text = call("adjust_statistic_sum", **arguments)
+        assert is_error and message in text and not writes(), (arguments, text)
+    in_litres = read("adjust_statistic_sum", statistic_id="sensor.gas", start_time="2026-11-20T13:00",
+                     adjustment=1, unit="L")
+    assert in_litres["unit"] == "L" and recorder[-1][2]["units"] == {"volume": "L"}, in_litres
+    done = read("adjust_statistic_sum", statistic_id="sensor.gas", start_time="2026-11-20T13:00",
+                adjustment=-10, dry_run=False)
+    # in the unit the statistic is shown in, which Home Assistant converts
+    assert writes()[-1] == (
+        "t0ken", "recorder/adjust_sum_statistics",
+        {"statistic_id": "sensor.gas", "start_time": "2026-11-20T12:00:00+00:00",
+         "adjustment": -10, "adjustment_unit_of_measurement": "m³"},
+    ), writes()[-1]
+    # read back once the recorder has got to it
+    assert done["applied"] is True and done["after"] == plan["after_calculated"], done
+    assert done["before"] == plan["before"]
+    far = read("adjust_statistic_sum", statistic_id="sensor.gas", start_time="2027-01-01T00:00",
+               adjustment=1, dry_run=False)
+    assert far["applied"] is None and far["before"]["rows"] == [], far
+
+    # import_statistics: only rows of an existing statistic, checked first
+    written_before = len(writes())
+    rows_in = [
+        {"start": "2026-11-20T15:00", "state": 205.0, "sum": 46.5},
+        {"start": "2026-11-20T16:00:00+01:00", "state": 206.0, "sum": 48.0},
+    ]
+    plan = read("import_statistics", statistic_id="sensor.gas", stats=rows_in)
+    # rows go in as they are, in the unit the statistic is stored in
+    assert plan["dry_run"] is True and plan["unit"] == "ft³" and len(writes()) == written_before
+    assert "stored in ft³ but shown in m³" in plan["unit_note"] and "{'volume': 'ft³'}" in plan["unit_note"]
+    read_back = [r for r in recorder if r[1] == "recorder/statistics_during_period"][-1][2]
+    assert read_back["units"] == {"volume": "ft³"}, read_back
+    assert plan["rows"] == {
+        "columns": ["start", "old_state", "old_sum", "new_state", "new_sum"],
+        "rows": [
+            ["2026-11-20T15:00:00+01:00", 105.0, 45.0, 205.0, 46.5],
+            ["2026-11-20T16:00:00+01:00", 106.0, 46.0, 206.0, 48.0],
+        ],
+    }, plan["rows"]
+    # the next hour keeps its sum (47): the last imported hour is 2 off
+    assert plan["warning"]["difference"] == 2.0, plan
+    assert "start_time 2026-11-20T17:00:00+01:00, adjustment 2.0" in plan["warning"]["message"]
+    same = read("import_statistics", statistic_id="sensor.gas",
+                stats=[{"start": "2026-11-20T16:00", "state": 1.0, "sum": 46.0}])
+    assert "warning" not in same, same
+    new_hours = [{"start": "2026-11-20T18:00", "sum": 60.0}, {"start": "2026-11-20T19:00", "sum": 61.0}]
+    assert "warning" not in read("import_statistics", statistic_id="sensor.gas", stats=new_hours)
+    for bad, message in (
+        ([], "must be a list"),
+        ([{"state": 1}], "needs a 'start'"),
+        ([{"start": "2026-11-20T15:30", "sum": 1}], "not the start of an hour"),
+        ([{"start": "2026-11-20T16:00", "sum": 1}, {"start": "2026-11-20T15:00", "sum": 2}], "in order of time"),
+        ([{"start": "2026-11-20T15:00", "sum": 2}, {"start": "2026-11-20T16:00", "sum": 1}], "sum decreases"),
+        ([{"start": "2026-11-20T15:00", "sum": 2, "mean": 1}], "not ['mean']"),
+        ([{"start": "2026-11-20T15:00"}], "neither state nor sum"),
+        ([{"start": "2026-11-20T15:00", "sum": "2"}], "must be a number"),
+    ):
+        is_error, text = call("import_statistics", statistic_id="sensor.gas", stats=bad, dry_run=False)
+        assert is_error and message in text and len(writes()) == written_before, (bad, text)
+    is_error, text = call("import_statistics", statistic_id="sensor.nope", stats=rows_in, dry_run=False)
+    assert is_error and "there is no statistic 'sensor.nope'" in text and len(writes()) == written_before
+    done = read("import_statistics", statistic_id="sensor.gas", stats=rows_in, dry_run=False)
+    assert done["imported"] == 2 and done["written"] is True and done["warning"]["difference"] == 2.0, done
+    assert writes()[-1][2] == {
+        # what the recorder stores goes back as it is
+        "metadata": {
+            "statistic_id": "sensor.gas", "source": "recorder", "name": None, "has_sum": True,
+            "unit_of_measurement": "ft³", "unit_class": "volume", "mean_type": 0,
+        },
+        "stats": [
+            {"start": "2026-11-20T14:00:00+00:00", "state": 205.0, "sum": 46.5},
+            {"start": "2026-11-20T15:00:00+00:00", "state": 206.0, "sum": 48.0},
+        ],
+    }, writes()[-1]
+    assert gas[ms("2026-11-20T16:00")] == {"state": 206.0, "sum": 48.0}
+    # an hour that had no row: only a sum above the next hour's is a jump
+    gap = lambda total: read("import_statistics", statistic_id="sensor.gas",
+                             stats=[{"start": "2026-11-20T09:00", "sum": total}])
+    assert "warning" not in gap(40.0) and gap(40.0)["rows"]["rows"][0][1:3] == [None, None]
+    assert gap(55.0)["warning"]["difference"] == 5.0
+    # only "dry_run": false writes
+    before_count = len(writes())
+    call("import_statistics", statistic_id="sensor.gas", stats=rows_in, dry_run=None)
+    assert len(writes()) == before_count
 
     # operations: service calls whose effect can be read back afterwards
     from custom_components.automation_api import operations

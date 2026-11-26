@@ -24,6 +24,7 @@ from . import helpers as helpers_mod
 from . import lovelace as lovelace_mod
 from . import registry as registry_mod
 from . import history as history_mod
+from . import stats as stats_mod
 from . import hacs as hacs_mod
 
 
@@ -1079,13 +1080,13 @@ def _window(request):
     )
 
 
-def _limit(request, default: int) -> int:
+def _limit(request, default: int, name: str = "limit") -> int:
     try:
-        limit = int(request.query.get("limit", default))
+        limit = int(request.query.get(name, default))
     except ValueError:
-        raise ValueError("limit must be an integer") from None
+        raise ValueError(f"{name} must be an integer") from None
     if limit < 1:
-        raise ValueError("limit must be at least 1")
+        raise ValueError(f"{name} must be at least 1")
     return limit
 
 
@@ -1097,7 +1098,7 @@ class StatisticsListView(_AuthedView):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
         try:
-            items = await history_mod.list_statistics(
+            items = await stats_mod.list_statistics(
                 hass,
                 _bearer(request),
                 search=request.query.get("search"),
@@ -1115,30 +1116,89 @@ class StatisticsDataView(_AuthedView):
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        statistic_ids = _list_query(request, "statistic_id")
-        if not statistic_ids:
-            return self.json({"error": "missing statistic_id"}, status_code=400)
-        period = request.query.get("period", "hour")
+        period = request.query.get("period", "day")
         try:
-            start_time, end_time = _window(request)
-            items = await history_mod.fetch_statistics(
+            # "energy:Wh,volume:L" -> {"energy": "Wh", "volume": "L"}
+            units = dict(pair.split(":", 1) for pair in _list_query(request, "units"))
+            start, end = stats_mod.window(
+                period,
+                start=request.query.get("start"),
+                end=request.query.get("end"),
+                hours=request.query.get("hours"),
+                days=request.query.get("days"),
+            )
+            result = await stats_mod.get_statistics(
                 hass,
                 _bearer(request),
-                statistic_ids=statistic_ids,
-                start_time=start_time,
-                end_time=end_time,
+                statistic_ids=_list_query(request, "statistic_ids"),
+                start=start,
+                end=end,
                 period=period,
                 types=_list_query(request, "types") or None,
+                units=units or None,
+                max_rows=_limit(request, stats_mod.DEFAULT_MAX_ROWS, "max_rows"),
             )
         except ValueError as e:
             return self.json({"error": str(e)}, status_code=400)
-        return self.json(
-            {
-                "start": start_time.isoformat(),
-                "end": end_time.isoformat(),
-                "period": period,
-                "items": items,
-            }
+        return self.json(result)
+
+
+class _StatisticsWriteView(_AuthedView):
+    """A change to the statistics; it only describes itself unless the body
+    holds `"dry_run": false`."""
+
+    what: str
+
+    async def _run(self, hass, token, body: dict, dry_run: bool) -> dict:
+        raise NotImplementedError
+
+    async def post(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        body, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(body, dict) or not isinstance(body.get("statistic_id"), str):
+            return self.json({"error": "missing statistic_id"}, status_code=400)
+        dry_run = body.get("dry_run", True) is not False
+        if not dry_run:
+            await log(hass, f"HTTP {self.what} statistics {body['statistic_id']}")
+        try:
+            result = await self._run(hass, _bearer(request), body, dry_run)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"status": "ok", **result})
+
+
+class StatisticsAdjustView(_StatisticsWriteView):
+    url = "/api/automation_api/statistics/adjust_sum"
+    name = "api:automation_api:statistics:adjust_sum"
+    what = "adjust sum of"
+
+    async def _run(self, hass, token, body: dict, dry_run: bool) -> dict:
+        return await stats_mod.adjust_sum(
+            hass,
+            token,
+            statistic_id=body["statistic_id"],
+            start_time=body.get("start_time"),
+            adjustment=body.get("adjustment"),
+            unit=body.get("unit"),
+            dry_run=dry_run,
+        )
+
+
+class StatisticsImportView(_StatisticsWriteView):
+    url = "/api/automation_api/statistics/import"
+    name = "api:automation_api:statistics:import"
+    what = "import"
+
+    async def _run(self, hass, token, body: dict, dry_run: bool) -> dict:
+        return await stats_mod.import_rows(
+            hass,
+            token,
+            statistic_id=body["statistic_id"],
+            stats=body.get("stats"),
+            dry_run=dry_run,
         )
 
 
@@ -1512,6 +1572,17 @@ class StatisticsMetadataView(_AuthedView):
     url = "/api/automation_api/statistics/metadata"
     name = "api:automation_api:statistics:metadata"
 
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        try:
+            items = await stats_mod.get_metadata(
+                hass, _bearer(request), _list_query(request, "statistic_ids") or None
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"items": items})
+
     async def post(self, request):
         import asyncio
         from homeassistant.components.recorder.statistics import (
@@ -1716,6 +1787,8 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(HistoryView)
     hass.http.register_view(StatisticsListView)
     hass.http.register_view(StatisticsDataView)
+    hass.http.register_view(StatisticsAdjustView)
+    hass.http.register_view(StatisticsImportView)
     hass.http.register_view(TraceListView)
     hass.http.register_view(TraceItemView)
     hass.http.register_view(LogbookView)

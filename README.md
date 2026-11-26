@@ -41,8 +41,10 @@ process to run.
 - Adding Matter devices with a pairing code
 - Reading repairs and persistent notifications; fixing a statistic's unit
 - Reading and changing the energy dashboard settings
-- What happened: state history with change counts, long-term statistics,
-  the traces of automation and script runs, the logbook and the error log
+- What happened: state history with change counts, the traces of
+  automation and script runs, the logbook and the error log
+- Long-term statistics: read them per hour, day, month or year, and repair
+  them (adjust a sum, import hours), with a dry run first
 - Built-in MCP server (Streamable HTTP) with a tool for every endpoint
 - Authenticated with Home Assistant's own access tokens (administrator)
 - No configuration files written: every change goes through Home
@@ -77,7 +79,7 @@ The token must belong to an administrator; other tokens receive `401`.
 
 The header does more than open the door. Several endpoints act as the
 caller: automations, scripts, scenes, `input_*` helpers, creating and
-changing dashboards, the store, and statistics, traces and logs. For those the integration connects to Home
+changing dashboards, the store, statistics, traces and logs. For those the integration connects to Home
 Assistant's own API with the token of the request and passes the request on,
 so Home Assistant carries it out as that user, with its own validation and
 permission checks. A request without `Authorization: Bearer` is refused
@@ -408,13 +410,12 @@ Assistant's own schemas, and invalid input is a 400.
 
 ### History, statistics, traces and logs
 
-Read-only endpoints for finding out what happened and why.
+Read-only endpoints for finding out what happened and why. Long-term
+statistics have [their own section](#long-term-statistics).
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/automation_api/history?entity_id=&hours=` | Every recorded state change of one or more entities |
-| `GET` | `/api/automation_api/statistics?search=&type=` | The long-term statistics the recorder keeps; `type` is `mean` or `sum` |
-| `GET` | `/api/automation_api/statistics/data?statistic_id=&period=&days=&types=` | Statistics rows per `5minute`, `hour` (default), `day`, `week`, `month` or `year` |
 | `GET` | `/api/automation_api/traces/{domain}?item_id=` | The stored runs of automations or scripts, newest first; `domain` is `automation` or `script` |
 | `GET` | `/api/automation_api/traces/{domain}/{item_id}/{run_id}` | One run, step by step |
 | `GET` | `/api/automation_api/logbook?entity_id=&hours=&limit=` | The logbook: what changed and what caused it |
@@ -428,7 +429,7 @@ the last 24 hours.
 | `hours`, `days` | Window length, ending at `end` (default: now) |
 | `start`, `end` | Absolute ISO 8601 bounds; override `hours` and `days` |
 
-Several entity ids or statistic ids go in one parameter, separated by commas.
+Several entity ids go in one parameter, separated by commas.
 
 **History** returns the recorder's state changes. `significant=true` uses
 `get_significant_states` instead of every change, `minimal=false` adds
@@ -442,19 +443,6 @@ carries a `counts` map per entity, which shows flapping sensors at a glance:
   "counts": {"sensor.outdoor_temperature": 47},
   "items": {"sensor.outdoor_temperature": [{"state": "...", "last_changed": "..."}]}
 }
-```
-
-**Statistics** are the aggregates Home Assistant keeps after the detailed
-history is purged: `mean`, `min` and `max` for measured values, and `sum`,
-`state` and `change` for totals such as energy (`change` is the use within
-each row). `types` limits the values returned. One answer holds at most 5000
-rows; a longer window needs a coarser `period`.
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" \
-  "http://ha:8123/api/automation_api/statistics/data?statistic_id=sensor.energy_import&period=day&days=7&types=change"
-# {"period":"day","items":{"sensor.energy_import":[
-#   {"start":"2026-11-24T23:00:00+00:00","end":"2026-11-25T23:00:00+00:00","change":16.25}, ...]}}
 ```
 
 **Traces** show whether and how an automation or script ran. The list gives
@@ -474,14 +462,99 @@ started, newest first, each with its `logger`, `message`, traceback
 (`exception`), `count` and when it first and last occurred. `level` and
 `search` filter; `limit` defaults to 50.
 
-Statistics, traces, the logbook and the system log are read with Home
-Assistant's own WebSocket commands, sent with the access token of the
-request.
+Traces, the logbook and the system log are read with Home Assistant's own
+WebSocket commands, sent with the access token of the request.
+
+### Long-term statistics
+
+The recorder keeps an aggregate per hour for every sensor with a state
+class, long after the detailed history is purged: the data behind the
+energy dashboard. These endpoints use the recorder's own WebSocket commands,
+sent with the access token of the request.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/automation_api/statistics?search=&type=` | List the statistics; `type` is `sum` (totals such as energy) or `mean` (measured values) |
+| `GET` | `/api/automation_api/statistics/data?statistic_ids=&period=&start=&end=&types=` | Read statistics as a table per id |
+| `GET` | `/api/automation_api/statistics/metadata?statistic_ids=` | The metadata the recorder stores, with the unit values are stored in |
+| `POST` | `/api/automation_api/statistics/metadata` | Change the stored unit and keep the history (see [Repairs](#repairs-notifications-and-statistics)) |
+| `POST` | `/api/automation_api/statistics/adjust_sum` | Shift the running total from an hour on; a dry run unless `"dry_run": false` |
+| `POST` | `/api/automation_api/statistics/import` | Write hourly rows of an existing statistic; a dry run unless `"dry_run": false` |
+
+#### Reading
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://ha:8123/api/automation_api/statistics/data?statistic_ids=sensor.gas_meter_gas&period=month&types=change&start=2026-01-01"
+# {"period":"month","start":"2026-01-01T00:00:00+01:00","end":"...","truncated":false,
+#  "statistics":{"sensor.gas_meter_gas":{"columns":["start","change"],
+#    "rows":[["2026-01-01T00:00:00+01:00",142.318],["2026-02-01T00:00:00+01:00",118.904], ...]}}}
+```
+
+| Parameter | Description |
+|---|---|
+| `statistic_ids` | One or more ids, separated by commas |
+| `period` | `5minute`, `hour`, `day` (default), `week`, `month` or `year`. `5minute` data only goes back about 10 days |
+| `start`, `end` | ISO times; `end` defaults to now. `hours` or `days` give the window as a length instead |
+| `types` | Default `change,sum,state`, for totals: `change` is the use within the row, `sum` the running total, `state` the meter reading. For measured values ask for `mean,min,max` |
+| `units` | Convert, per unit class: `energy:Wh,volume:L` |
+| `max_rows` | The most rows in one answer, over all ids (default 2000) |
+
+- **Times are local.** A time without an offset is taken in Home
+  Assistant's time zone, and a date alone (`2022-01-01`) is local midnight.
+  Rows carry their offset (`+01:00`, `+02:00`). A day read per hour has 24
+  rows, or 23 or 25 when the clocks change.
+- **Whole periods.** `start` is moved back to the start of the period it
+  lies in, so the first row is a whole day, month or year and not the rest
+  of one. Without a window you get the last day (per 5 minutes or hour), 30
+  days, 26 weeks, year or 5 years.
+- **Compact.** Per statistic `columns` and `rows`, with numbers rounded to
+  three decimals.
+- **Paging.** An answer that would hold more than `max_rows` rows is cut
+  after a whole period for every id, with `"truncated": true` and
+  `next_start`. Ask again with `start` set to `next_start` for the next
+  page.
+
+#### Repairing
+
+Both tools rewrite history, so both only describe what they would do until
+the body holds `"dry_run": false`. They need an administrator, like every
+endpoint.
+
+**`POST /statistics/adjust_sum`** with `{statistic_id, start_time,
+adjustment, unit?}` adds `adjustment` to the running total from the hour
+`start_time` on. That hour and every later hour shift by it, so the use of
+that one hour changes by `adjustment` and all later hours keep theirs. It
+takes out a spike or a dip, for example after a meter was replaced. It is
+what the adjust dialog of *Developer Tools → Statistics* does. `unit`
+defaults to the unit the statistic is shown in. The answer holds the hours
+from two before to three after `start_time`: `before`, and
+`after_calculated` for a dry run or `after`, read back, with `applied`.
+
+**`POST /statistics/import`** with `{statistic_id, stats: [{start, state?,
+sum?}, ...]}` writes hourly rows, replacing the hours that already have
+one. It fills a gap or replaces wrong hours.
+
+- The statistic has to exist. Its metadata (source, unit, ...) is taken
+  from the recorder and can't be changed here.
+- `start` is the start of an hour, the rows are in order of time and `sum`
+  does not decrease; anything else is refused.
+- The values must be in the unit the statistic is **stored** in, which can
+  differ from the unit it is shown in (a gas meter stored in ft³ and shown
+  in m³). Nothing is converted. The answer names the unit and adds a
+  `unit_note` when the two differ; read the current values in the stored
+  unit with `units=volume:ft³`.
+- The answer lists per hour the old and the new `state` and `sum`.
+- The hours after the import keep their `sum`. When the last imported sum
+  does not connect to them, the answer holds a `warning` with the
+  `difference`, and the `adjust_sum` call that corrects the later hours.
+
+There is no endpoint that deletes statistics.
 
 ## MCP server
 
 The integration serves an MCP server over Streamable HTTP at
-`/api/automation_api/mcp`. It offers 80 tools: one for every REST endpoint,
+`/api/automation_api/mcp`. It offers 83 tools: one for every REST endpoint,
 plus four for controlling devices. It uses the same administrator bearer
 token. A tool runs its REST endpoint in-process, so both behave the same.
 
@@ -543,10 +616,11 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | HACS / Marketplace | Search, install and remove through either; changes off by default | No | Yes |
 | Energy dashboard settings | Read, validate and change, costs included; dry run and stale-read check | No | Yes, with a dry run |
 | History, statistics, traces and logs | Yes | No | Yes |
+| Repair statistics (adjust a sum, import hours) | Yes, with a dry run | No | No |
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
 | Safeguards | Admin only, store changes opt-in, Home Assistant validates every change, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 80 | Depends on Assist | 87 |
+| Tools | 83 | Depends on Assist | 87 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,

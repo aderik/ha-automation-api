@@ -23,9 +23,10 @@ from homeassistant.helpers.json import json_dumps
 
 from . import http as views
 from . import operations as operations_mod
+from . import stats as stats_mod
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "2.2.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "2.3.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -1162,9 +1163,10 @@ async def list_statistics(
     that stay after the detailed state history is purged.
 
     `search` matches the statistic id (usually the entity id) or name;
-    `statistic_type` is 'mean' (measured values such as temperature) or
-    'sum' (totals such as energy). Each item has `statistic_id`,
-    `unit_of_measurement`, `has_mean` and `has_sum`.
+    `statistic_type` is 'sum' (totals such as energy and gas) or 'mean'
+    (measured values such as temperature). Each item has `statistic_id`,
+    `unit`, `unit_class`, `source`, `has_sum` and `mean_type` (0 none,
+    1 arithmetic, 2 circular).
     """
     return await c(
         views.StatisticsListView,
@@ -1176,44 +1178,155 @@ async def list_statistics(
 @tool
 async def get_statistics(
     c,
-    statistic_id: str,
-    period: str = "hour",
-    hours: float | None = None,
-    days: float | None = None,
+    statistic_ids: list[str],
+    period: str = "day",
     start: str | None = None,
     end: str | None = None,
-    types: str | None = None,
+    hours: float | None = None,
+    days: float | None = None,
+    types: list[str] | None = None,
+    units: dict[str, Any] | None = None,
+    max_rows: int = 2000,
 ) -> Any:
-    """Fetch long-term statistics: how a value developed over days, months or
-    years, or how much energy was used per day.
+    """Fetch long-term statistics: how much energy or gas was used per day,
+    month or year, or how a value developed.
 
     Args:
-        statistic_id: One id, or several separated by commas (from
-            `list_statistics`), e.g. 'sensor.outdoor_temperature'.
-        period: Row size: '5minute', 'hour' (default), 'day', 'week',
-            'month' or 'year'. '5minute' only reaches back about 10 days.
-        hours, days, start, end: The window, as for `get_history`;
-            default the last 24 hours.
-        types: Comma-separated values to return (default all): 'mean',
-            'min', 'max' for measured values; 'sum', 'state', 'change' for
-            totals ('change' is the use within each row).
+        statistic_ids: The ids (from `list_statistics`), e.g.
+            ['sensor.p1_meter_energy_import'].
+        period: Row size: '5minute', 'hour', 'day' (default), 'week',
+            'month' or 'year'. '5minute' data only goes back about 10 days.
+        start, end: The window, as ISO times. A time without an offset is
+            local time and a date alone is local midnight ('2022-01-01').
+            `start` is moved back to the start of its period, so that the
+            first row is a whole day, month or year. `end` defaults to now.
+        hours, days: The window as a length ending at `end`, instead of
+            `start`.
+        types: The values per row. Default ['change', 'sum', 'state'], for
+            totals: `change` is the use within the row, `sum` the running
+            total, `state` the meter reading. For measured values pass
+            ['mean', 'min', 'max'].
+        units: Convert to another unit, per unit class: {'energy': 'Wh'}.
+        max_rows: The most rows in one answer, over all ids (default 2000).
 
-    Returns {start, end, period, items: {statistic_id: [{start, end,
-    mean, min, max | sum, state, change}, ...]}}. At most 5000 rows; use a
-    coarser period for a longer window.
+    Returns {period, start, end, statistics: {statistic_id: {columns:
+    ['start', ...types], rows: [[...], ...]}}, truncated}. `start` of a row
+    is local time with its offset; numbers are rounded to 3 decimals. When
+    `truncated` is true, call again with `start` set to `next_start` for the
+    next page.
     """
     return await c(
         views.StatisticsDataView,
         "get",
         query={
-            "statistic_id": statistic_id,
+            "statistic_ids": ",".join(stats_mod.as_list(statistic_ids, "statistic_ids")),
             "period": period,
-            "hours": hours,
-            "days": days,
             "start": start,
             "end": end,
-            "types": types,
+            "hours": hours,
+            "days": days,
+            "types": ",".join(stats_mod.as_list(types, "types")) if types else None,
+            "units": ",".join(f"{k}:{v}" for k, v in units.items()) if units else None,
+            "max_rows": max_rows,
         },
+    )
+
+
+@tool
+async def get_statistics_metadata(c, statistic_ids: list[str] | None = None) -> Any:
+    """Return the metadata the recorder stores for statistics: the unit the
+    values are stored in (`statistics_unit_of_measurement`), the unit they
+    are shown in, `unit_class`, `source`, `has_sum` and `mean_type`.
+    Without `statistic_ids`, of every statistic."""
+    return await c(
+        views.StatisticsMetadataView,
+        "get",
+        query={
+            "statistic_ids": ",".join(stats_mod.as_list(statistic_ids, "statistic_ids"))
+            if statistic_ids
+            else None
+        },
+    )
+
+
+@tool
+async def adjust_statistic_sum(
+    c,
+    statistic_id: str,
+    start_time: str,
+    adjustment: float,
+    unit: str | None = None,
+    dry_run: bool = True,
+) -> Any:
+    """Correct a jump in the running total (`sum`) of a statistic, the same
+    as Developer Tools > Statistics > the adjust-sum dialog.
+
+    Adds `adjustment` to `sum` from the hour `start_time` on: that hour and
+    every later hour shift by it, so the use (`change`) of that one hour
+    changes by `adjustment` and all later hours keep theirs. Use it to take
+    out a spike or a dip, e.g. after a meter was replaced or reset.
+
+    Args:
+        statistic_id: A statistic with a sum, e.g. 'sensor.gas_meter_gas'.
+        start_time: ISO time of the start of an hour; without an offset it
+            is local time.
+        adjustment: The amount to add; negative to lower.
+        unit: The unit of `adjustment` and of the answer; default the unit
+            the statistic is shown in, which is what `get_statistics`
+            returns. Home Assistant converts it to the stored unit.
+        dry_run: True (default) changes nothing and returns the hours from
+            two before to three after `start_time` as they are (`before`)
+            and as they would become (`after_calculated`). Pass false to
+            adjust; the answer then holds `before`, `after` as read back,
+            and `applied`.
+
+    This rewrites history and can't be undone other than by adjusting back
+    with the opposite amount. Do a dry run first and show it to the user.
+    """
+    return await c(
+        views.StatisticsAdjustView,
+        "post",
+        body={
+            "statistic_id": statistic_id,
+            "start_time": start_time,
+            "adjustment": adjustment,
+            "unit": unit,
+            "dry_run": dry_run,
+        },
+    )
+
+
+@tool
+async def import_statistics(
+    c, statistic_id: str, stats: list[dict[str, Any]], dry_run: bool = True
+) -> Any:
+    """Write hourly rows of an existing statistic: fill a gap or replace
+    wrong hours. Hours that already have a row are overwritten.
+
+    Args:
+        statistic_id: An existing statistic; its metadata (source, unit,
+            ...) is taken from the recorder and can't be changed here.
+        stats: The rows, in order of time: [{"start": "2026-11-01T00:00:00",
+            "state": 1234.5, "sum": 987.6}, ...]. `start` is the start of an
+            hour (local time without an offset); `state` is the meter
+            reading and `sum` the running total. `sum` may not decrease.
+            The values must be in the unit the statistic is STORED in
+            (`statistics_unit_of_measurement` of `get_statistics_metadata`),
+            which can differ from the unit `get_statistics` shows; nothing
+            is converted. The answer names the unit, and warns in
+            `unit_note` when the two differ.
+        dry_run: True (default) writes nothing and returns per hour the
+            old and the new state and sum. Pass false to write.
+
+    The hours after the import keep their `sum`. When the last imported
+    `sum` does not connect to them, the answer holds a `warning` with the
+    `difference`; correct the later hours with `adjust_statistic_sum`.
+    This rewrites history; do a dry run first and show it to the user.
+    """
+    return await c(
+        views.StatisticsImportView,
+        "post",
+        body={"statistic_id": statistic_id, "stats": stats, "dry_run": dry_run},
     )
 
 

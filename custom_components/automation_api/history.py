@@ -1,9 +1,9 @@
-"""What happened: state history, statistics, traces, the logbook and errors.
+"""What happened: state history, traces, the logbook and errors.
 
 State history wraps `homeassistant.components.recorder.history`. The rest is
 read with the WebSocket commands the Home Assistant UI itself uses, sent as
-the caller (see `ha_client`): long-term statistics, the traces of automation
-and script runs, the logbook and the system log.
+the caller (see `ha_client`): the traces of automation and script runs, the
+logbook and the system log. Long-term statistics are in `stats`.
 """
 
 from __future__ import annotations
@@ -15,19 +15,6 @@ from homeassistant.core import HomeAssistant, State
 from homeassistant.util import dt as dt_util
 
 from .ha_client import connect as _connect
-
-# Seconds a statistics period spans, to size an answer before asking for it
-_PERIODS = {
-    "5minute": 300,
-    "hour": 3600,
-    "day": 86400,
-    "week": 7 * 86400,
-    "month": 30 * 86400,
-    "year": 365 * 86400,
-}
-
-# The most statistics rows one answer holds
-MAX_ROWS = 5000
 
 TRACE_DOMAINS = ("automation", "script")
 
@@ -123,90 +110,11 @@ async def fetch_history(
     return {eid: [_state_to_dict(s) for s in states] for eid, states in raw.items()}
 
 
-# --- Long-term statistics -------------------------------------------------
-
 def _iso(seconds: float | None) -> str | None:
     """An ISO 8601 time for seconds since the epoch."""
     if seconds is None:
         return None
     return datetime.fromtimestamp(seconds, timezone.utc).isoformat()
-
-
-async def list_statistics(
-    hass: HomeAssistant,
-    token: str | None,
-    *,
-    search: str | None = None,
-    kind: str | None = None,
-) -> list[dict]:
-    """The statistics the recorder keeps; `kind` is "mean" or "sum"."""
-    if kind not in (None, "mean", "sum"):
-        raise ValueError("type must be 'mean' or 'sum'")
-    async with _connect(hass, token, ValueError) as send:
-        found = await send(
-            "recorder/list_statistic_ids", **({"statistic_type": kind} if kind else {})
-        )
-    wanted = (search or "").lower()
-    return [
-        {
-            "statistic_id": item["statistic_id"],
-            "name": item.get("name"),
-            "unit_of_measurement": item.get("display_unit_of_measurement"),
-            "unit_class": item.get("unit_class"),
-            "has_mean": item.get("has_mean"),
-            "has_sum": item.get("has_sum"),
-            "source": item.get("source"),
-        }
-        for item in found
-        if wanted in item["statistic_id"].lower()
-        or wanted in (item.get("name") or "").lower()
-    ]
-
-
-async def fetch_statistics(
-    hass: HomeAssistant,
-    token: str | None,
-    *,
-    statistic_ids: list[str],
-    start_time: datetime,
-    end_time: datetime,
-    period: str = "hour",
-    types: list[str] | None = None,
-) -> dict[str, list[dict]]:
-    """Statistics rows per statistic id: `mean`, `min` and `max` for measured
-    values, `sum`, `state` and `change` for totals such as energy."""
-    if period not in _PERIODS:
-        raise ValueError(f"period must be one of {list(_PERIODS)}")
-    rows = (end_time - start_time).total_seconds() / _PERIODS[period] * len(statistic_ids)
-    if rows > MAX_ROWS:
-        raise ValueError(
-            f"that is about {int(rows)} rows, more than {MAX_ROWS}; use a "
-            "shorter window, a coarser period or fewer statistics"
-        )
-    async with _connect(hass, token, ValueError) as send:
-        found = await send(
-            "recorder/statistics_during_period",
-            start_time=start_time.isoformat(),
-            end_time=end_time.isoformat(),
-            statistic_ids=statistic_ids,
-            period=period,
-            **({"types": types} if types else {}),
-        )
-    return {
-        statistic_id: [
-            {
-                "start": _iso(row["start"] / 1000),
-                "end": _iso(row["end"] / 1000),
-                **{
-                    k: v
-                    for k, v in row.items()
-                    if k not in ("start", "end") and v is not None
-                },
-            }
-            for row in rows
-        ]
-        for statistic_id, rows in found.items()
-    }
 
 
 # --- Traces of automation and script runs ---------------------------------

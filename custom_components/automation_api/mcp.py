@@ -1125,8 +1125,14 @@ async def hacs_search(
     `sort` is 'stars' (default, most first), 'last_updated' (most recent
     first) or 'name'. At most `limit` (default 25) results. Each item has
     `id`, `full_name`, `category`, `domain`, `installed_version`,
-    `available_version`, `pending_upgrade` and `last_updated`. `downloads_allowed` says
-    whether `hacs_download` is enabled."""
+    `available_version`, `pending_upgrade`, `last_updated` and `url`.
+
+    This only reads. Installing and removing is done by the user in the
+    store: give them `url`, the path of the repository's page in Home
+    Assistant (put their Home Assistant address in front), where they
+    click Install or Remove. An installed repository with `pending_upgrade`
+    can be updated with `call_service`: domain 'update', service 'install',
+    on its update entity (see `list_entities` with domain 'update')."""
     return await c(
         views.HacsRepositoriesView,
         "get",
@@ -1138,49 +1144,6 @@ async def hacs_search(
             "limit": limit,
         },
     )
-
-
-@tool
-async def hacs_download(
-    c,
-    repository: str,
-    category: str | None = None,
-    version: str | None = None,
-) -> Any:
-    """Install or update a repository through the Marketplace or HACS:
-    `repository` is its `id` or `owner/repo`. A repository not in the store is added as a custom
-    repository first, which needs `category`. `version` picks a release tag
-    (default: latest).
-
-    This installs third-party code with full Home Assistant rights. Only use
-    it when the user asked for that repository; it fails unless 'Allow HACS
-    downloads' is on in the integration options. The store carries it out as
-    the user of your access token: in the Marketplace that user must have
-    accepted its warning, and adding a custom repository needs GitHub
-    connected there; an error that says so is for the user to settle in the
-    Marketplace. When `restart_required`
-    is true, restart Home Assistant (ask the user first), then add the
-    integration with `start_config_flow` using its `domain`."""
-    return await c(
-        views.HacsDownloadView,
-        "post",
-        body={"repository": repository, "category": category, "version": version},
-    )
-
-
-@tool
-async def hacs_remove(c, repository: str) -> Any:
-    """Uninstall a repository downloaded through the Marketplace or HACS:
-    `repository` is its
-    `id` or `owner/repo`. Only use it when the user asked to remove that
-    repository; it fails unless 'Allow HACS downloads' is on in the
-    integration options. HACS itself and this integration can't be removed.
-
-    For an integration, first remove its config entries with
-    `remove_config_entry`; the Marketplace refuses otherwise, HACS leaves
-    them behind. When
-    `restart_required` is true, restart Home Assistant (ask the user first)."""
-    return await c(views.HacsRemoveView, "post", body={"repository": repository})
 
 
 # ---------------------------------------------------------------------------

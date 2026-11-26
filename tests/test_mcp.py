@@ -98,7 +98,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 88, len(tools)
+    assert len(tools) == 86, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -112,6 +112,8 @@ def main():
     assert schema["properties"]["config"] == {"type": "object"}
     assert tools["list_entities"]["inputSchema"]["properties"]["domain"] == {"type": "string"}
     assert not {"get_managed_package", "upsert_notify_group"} & tools.keys()
+    # installing and removing is the store's job, with the user in front of it
+    assert not {"hacs_download", "hacs_remove"} & tools.keys() and "hacs_search" in tools
     schema = tools["get_operation_status"]["inputSchema"]
     assert schema["required"] == ["operation_ids"] and schema["properties"] == {
         "operation_ids": {"type": "array"},
@@ -497,7 +499,8 @@ def main():
     )
     assert done == {"type": "create_entry", "entry_id": "e1", "title": "Met"}, done
 
-    # HACS / Marketplace: a WebSocket client of the store, as the caller
+    # HACS / Marketplace: search only, with the page of each repository in
+    # the store, where the user installs or removes it
     from custom_components.automation_api import hacs
 
     def row(full_name, installed=False, stars=1, last_updated=None, category="integration"):
@@ -510,37 +513,25 @@ def main():
         }
 
     rows, sent, tokens, fail = [], [], [], {}
-    renamed = {"old/name": "new/name"}
 
     @asynccontextmanager
     async def fake_connect(hass, token, error):
-        """A store that answers its websocket commands from `rows`."""
+        """A store that answers its list command from `rows`."""
         tokens.append(token)
 
         async def command(type_, **fields):
             sent.append((type_, fields))
             if type_ in fail:
                 raise error(fail[type_])
-            command = type_.split("/", 1)[1]
-            if command == "repositories/list":
-                wanted = fields.get("categories")
-                return [dict(r) for r in rows if not wanted or r["category"] in wanted]
-            if command == "repositories/add":
-                if fields["category"] == "integration":  # anything else fails validation
-                    name = fields["repository"]
-                    rows.append(row(renamed.get(name, name)))
-                return None
-            target = next(r for r in rows if r["id"] == fields["repository"])
-            target["installed"] = command in ("repository/install", "repository/download")
-            return None
+            assert type_.endswith("/repositories/list"), type_  # nothing else is ever sent
+            wanted = fields.get("categories")
+            return [dict(r) for r in rows if not wanted or r["category"] in wanted]
 
         yield command
 
     hacs._connect = fake_connect
-    entry = SimpleNamespace(options={})
     set_up = {"hacs"}
     fake_hass = SimpleNamespace(
-        data={"automation_api": {"entry": entry}},
         config_entries=SimpleNamespace(async_entries=lambda d: [1] if d in set_up else []),
     )
 
@@ -550,9 +541,6 @@ def main():
         except hacs.HacsError as e:
             return e
 
-    # downloads are opt-in, and the store is asked with the caller's token
-    assert "disabled" in str(run(hacs.download(fake_hass, "t", "a/b")))
-    entry.options["allow_hacs"] = True
     from custom_components.automation_api import ha_client
 
     async def without_token():
@@ -560,40 +548,19 @@ def main():
             pass
 
     assert "access token" in str(run(without_token()))
+    assert not hasattr(hacs, "download") and not hasattr(hacs, "remove")
 
-    # HACS: unknown repos are added as custom first
     rows.append(row("e/f", category="plugin"))
-    assert "pass `category` (one of ['plugin'])" in str(run(hacs.download(fake_hass, "t", "a/b")))
-    assert "validation failed" in str(run(hacs.download(fake_hass, "t", "a/b", category="x")))
-    sent.clear()
-    result = run(hacs.download(fake_hass, "t", "https://github.com/a/b/", category="integration"))
-    assert result["full_name"] == "a/b" and result["installed"] and result["restart_required"], result
-    assert "topics" not in result, result
-    a_b = result["id"]
-    assert [m for m in sent if "list" not in m[0]] == [
-        ("hacs/repositories/add", {"repository": "a/b", "category": "integration"}),
-        ("hacs/repository/download", {"repository": a_b}),
-    ], sent
-    result = run(hacs.download(fake_hass, "t", "old/name", category="integration"))
-    assert result["full_name"] == "new/name" and result["installed"], result
-
-    # remove: only installed repos, never HACS itself; gated like downloads
-    result = run(hacs.remove(fake_hass, "t", "A/B"))
-    assert result["restart_required"] and not result["installed"], result
-    assert sent[-2] == ("hacs/repository/remove", {"repository": a_b}), sent[-2]
-    assert "not installed" in str(run(hacs.remove(fake_hass, "t", "x/y")))
-    assert "not installed" in str(run(hacs.remove(fake_hass, "t", "a/b")))
-    rows.append(row("hacs/integration", installed=True))
-    assert "refusing" in str(run(hacs.remove(fake_hass, "t", "hacs/integration")))
-    entry.options["allow_hacs"] = False
-    assert "disabled" in str(run(hacs.remove(fake_hass, "t", "new/name")))
-    entry.options["allow_hacs"] = True
-
+    rows.append(row("A/b", installed=True))
+    found = run(hacs.search(fake_hass, "t", query="E/F"))
+    assert [r["full_name"] for r in found] == ["e/f"] and "topics" not in found[0], found
+    # on HACS the page of a repository is in its own panel
+    assert found[0]["url"] == "/hacs/repository/100", found
+    assert sent[-1] == ("hacs/repositories/list", {})
     names = lambda **kw: [r["full_name"] for r in run(hacs.search(fake_hass, "t", **kw))]
-    assert names(query="E/F") == ["e/f"]
     assert names(category="plugin") == ["e/f"]
     assert sent[-1] == ("hacs/repositories/list", {"categories": ["plugin"]}), sent[-1]
-    assert set(names(installed=True)) == {"new/name", "hacs/integration"}
+    assert names(installed=True) == ["A/b"] and names(query="a/B") == ["A/b"]
     rows[:] = []
     rows.append(row("b/old", stars=9, last_updated="2025-01-01T00:00:00Z"))
     rows.append(row("a/new", stars=1, last_updated="2026-09-01T00:00:00Z"))
@@ -607,15 +574,9 @@ def main():
     # Marketplace (2026.11+): preferred over HACS; its refusals are passed on
     set_up.add("marketplace")
     rows.append(row("M/p"))
-    m_p = rows[-1]["id"]
-    result = run(hacs.download(fake_hass, "t", m_p, version="v2"))
-    assert result["full_name"] == "M/p" and result["installed"], result
-    assert sent[-2] == (
-        "marketplace/repository/install",
-        {"repository": m_p, "version": "v2"},
-    ), sent[-2]
-    fail["marketplace/repository/uninstall"] = "m/p is in use (repository_in_use)"
-    assert "in use" in str(run(hacs.remove(fake_hass, "t", "m/p")))
+    found = run(hacs.search(fake_hass, "t", query="m/p"))
+    assert found[0]["url"] == f"/marketplace/repository/{found[0]['id']}", found
+    assert sent[-1] == ("marketplace/repositories/list", {})
     fail["marketplace/repositories/list"] = "not loaded (not_loaded)"
     assert "not_loaded" in str(run(hacs.search(fake_hass, "t")))
     fail.clear()
@@ -627,7 +588,9 @@ def main():
         async_entries=lambda domain: [1] if domain == "marketplace" else []
     )
     is_error, text = call("hacs_search", query="M/P")
-    assert not is_error and json.loads(text)["items"][0]["full_name"] == "M/p", text
+    listed = json.loads(text)
+    assert not is_error and listed["items"][0]["full_name"] == "M/p", text
+    assert list(listed) == ["items"] and listed["items"][0]["url"].startswith("/marketplace/repository/")
     assert tokens[-1] == "t0ken", tokens[-1]
 
     # Lovelace: dashboards are created, updated and deleted by Lovelace itself,

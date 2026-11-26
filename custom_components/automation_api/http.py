@@ -1515,61 +1515,7 @@ class HacsRepositoriesView(_AuthedView):
             )
         except hacs_mod.HacsError as e:
             return self.json({"error": str(e)}, status_code=400)
-        return self.json(
-            {"downloads_allowed": hacs_mod.downloads_allowed(hass), "items": items}
-        )
-
-
-class HacsDownloadView(_AuthedView):
-    url = "/api/automation_api/hacs/download"
-    name = "api:automation_api:hacs:download"
-
-    async def post(self, request):
-        hass: HomeAssistant = request.app["hass"]
-        _require_admin(request)
-        body, err = await self._json_body(request)
-        if err:
-            return err
-        if not isinstance(body, dict) or not body.get("repository"):
-            return self.json({"error": "missing repository"}, status_code=400)
-        await log(hass, f"HTTP hacs download {body['repository']}")
-        try:
-            result = await hacs_mod.download(
-                hass,
-                _bearer(request),
-                body["repository"],
-                category=body.get("category"),
-                version=body.get("version"),
-            )
-        except hacs_mod.HacsError as e:
-            return self.json({"error": str(e)}, status_code=400)
-        except Exception as e:
-            return self.json({"error": f"download failed: {e}"}, status_code=500)
-        return self.json(result)
-
-
-class HacsRemoveView(_AuthedView):
-    url = "/api/automation_api/hacs/remove"
-    name = "api:automation_api:hacs:remove"
-
-    async def post(self, request):
-        hass: HomeAssistant = request.app["hass"]
-        _require_admin(request)
-        body, err = await self._json_body(request)
-        if err:
-            return err
-        if not isinstance(body, dict) or not body.get("repository"):
-            return self.json({"error": "missing repository"}, status_code=400)
-        await log(hass, f"HTTP hacs remove {body['repository']}")
-        try:
-            result = await hacs_mod.remove(
-                hass, _bearer(request), body["repository"]
-            )
-        except hacs_mod.HacsError as e:
-            return self.json({"error": str(e)}, status_code=400)
-        except Exception as e:
-            return self.json({"error": f"remove failed: {e}"}, status_code=500)
-        return self.json(result)
+        return self.json({"items": items})
 
 
 class MatterCommissionView(_AuthedView):
@@ -1806,8 +1752,6 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(ConfigFlowListView)
     hass.http.register_view(ConfigFlowItemView)
     hass.http.register_view(HacsRepositoriesView)
-    hass.http.register_view(HacsDownloadView)
-    hass.http.register_view(HacsRemoveView)
     hass.http.register_view(MatterCommissionView)
     hass.http.register_view(RepairsView)
     hass.http.register_view(NotificationsView)

@@ -37,8 +37,8 @@ process to run.
 - Entity, device and config-entry registries, including reload, enable,
   disable and remove
 - Adding integrations through their config flows, including discovered ones
-- Searching the Marketplace or HACS, and installing and removing
-  repositories (opt-in)
+- Searching the Marketplace or HACS, with a link to the page where you
+  install or remove a repository
 - Adding Matter devices with a pairing code
 - Reading repairs and persistent notifications; fixing a statistic's unit
 - Reading and changing the energy dashboard settings
@@ -58,9 +58,7 @@ process to run.
    repository as a custom repository of type *Integration*.
 2. Install it and restart Home Assistant.
 3. Go to *Settings → Devices & services → Add integration* and choose
-   **Automation API**. There is nothing to configure. The only option,
-   *Allow HACS / Marketplace downloads* under *Configure*, is off by default
-   (see [HACS / Marketplace](#hacs--marketplace)).
+   **Automation API**. There is nothing to configure.
 4. Create a long-lived access token for an **administrator** account
    (profile → *Security*).
 
@@ -361,38 +359,30 @@ the same way (`{"domain": "group"}`, `{"domain": "statistics"}`).
 
 ### HACS / Marketplace
 
-Search the store and install, update or remove repositories. Home Assistant
-2026.11 took HACS into core as the **Marketplace** integration; on older
-installs the HACS custom integration is used. The Marketplace wins when both
-are set up; the endpoints and MCP tools (`hacs_*`) are the same for both.
-
-The integration is a client of the store, like the store's own panel: it
-connects to Home Assistant's WebSocket API with the access token of the
-request and sends the store's commands (`marketplace/repository/install`,
-...; tested against the Marketplace of 2026.11, and written for HACS 2.0.5).
-The store carries out every request itself, as the user of that token. So
-the token has to be sent as `Authorization: Bearer`, and in the Marketplace
-that user must have accepted its first-run warning; adding a custom
-repository also needs GitHub connected there. Its refusals come back as the
-`error` of a `400`.
-
-Downloading installs third-party code that runs with full Home Assistant
-rights, so on top of that downloads and removals are **off by default**:
-enable *Allow HACS / Marketplace downloads* under *Settings → Devices &
-services → Automation API → Configure*. Searching works either way.
+Search the store. Home Assistant 2026.11 took HACS into core as the
+**Marketplace** integration; on older installs the HACS custom integration
+is used. The Marketplace wins when both are set up.
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/automation_api/hacs/repositories?query=&category=&installed=&sort=&limit=` | Search the store; `sort` is `stars` (default), `last_updated` or `name`; 25 results by default |
-| `POST` | `/api/automation_api/hacs/download` | Install or update (`{repository, category?, version?}`) |
-| `POST` | `/api/automation_api/hacs/remove` | Uninstall (`{repository}`); HACS itself and this integration are refused |
 
-`repository` is a store id or `owner/repo`. A repository that isn't in the
-store is added as a custom repository first, which needs `category`
-(`integration`, `plugin`, `theme`, ...). A downloaded integration needs a
-restart (`restart_required: true`); then add it with a config flow. Before
-removing an integration, remove its config entries: the Marketplace refuses
-while they exist, HACS leaves them behind.
+`query` matches the name, `owner/repo`, description and domain; `category`
+is `integration`, `plugin` (dashboard cards), `theme` and so on. Each result
+has `id`, `full_name`, `category`, `domain`, `installed`,
+`installed_version`, `available_version`, `pending_upgrade` and `url`.
+
+This only reads: it asks the store for its list with the store's own
+WebSocket command (`marketplace/repositories/list`, or
+`hacs/repositories/list`), sent with the access token of the request.
+Installing, adding and removing repositories is the store's job, with you
+in front of it. `url` is the page of the repository in the store
+(`/marketplace/repository/<id>`): open it on your Home Assistant and click
+*Install* or *Remove* there. An agent that finds what you need hands you
+that link.
+
+An installed repository with `pending_upgrade` has an update entity; update
+it with the `update.install` service, like any other update.
 
 ### Matter
 
@@ -600,7 +590,7 @@ There is no endpoint that deletes statistics.
 ## MCP server
 
 The integration serves an MCP server over Streamable HTTP at
-`/api/automation_api/mcp`. It offers 88 tools: one for every REST endpoint,
+`/api/automation_api/mcp`. It offers 86 tools: one for every REST endpoint,
 plus four for controlling devices. It uses the same administrator bearer
 token. A tool runs its REST endpoint in-process, so both behave the same.
 
@@ -659,20 +649,32 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Entity and device registry | Yes | No | Yes |
 | Add integrations (config flows) | Yes | No | Yes |
 | Add devices | Matter, with a pairing code | No | Matter, Z-Wave, Zigbee and Thread |
-| HACS / Marketplace | Search, install and remove through either; changes off by default | No | Yes |
+| HACS / Marketplace | Search, with a link to install or remove in the store | No | Search, install and remove |
 | Energy dashboard settings | Read, validate and change, costs included; dry run and stale-read check | No | Yes, with a dry run |
 | History, statistics, traces and logs | Yes | No | Yes |
 | Repair statistics (adjust a sum, import hours) | Yes | No | Yes |
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
-| Safeguards | Admin only, store changes opt-in, Home Assistant validates every change, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 88 | Depends on Assist | 87 |
+| Safeguards | Admin only, Home Assistant validates every change, repairs to statistics are a dry run first, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
+| Tools | 86 | Depends on Assist | 87 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,
 CI) next to MCP.
 
 ## Upgrading
+
+### To 2.5
+
+Installing and removing repositories from the store is gone: the
+`/hacs/download` and `/hacs/remove` endpoints, the `hacs_download` and
+`hacs_remove` tools and the *Allow HACS / Marketplace downloads* option.
+That is the store's job, with you in front of it. `hacs_search` stays and
+gives the `url` of each repository's page in the store.
+
+`commission_matter` answers with the `devices` that were added instead of a
+`node_id`, and a dry run of the energy settings no longer validates the
+input; Home Assistant does that when it saves.
 
 ### From 1.x to 2.0
 

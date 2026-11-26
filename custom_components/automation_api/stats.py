@@ -211,6 +211,24 @@ async def get_metadata(
         return await _metadata(send, statistic_ids)
 
 
+async def update_unit(
+    hass: HomeAssistant,
+    token: str | None,
+    statistic_id: str,
+    unit: str | None,
+    unit_class: str | None = None,
+) -> None:
+    """Change the unit a statistic is stored in and keep its history, as
+    Developer Tools → Statistics → Fix does; answers when the recorder is done."""
+    async with _connect(hass, token, ValueError) as send:
+        await send(
+            "recorder/update_statistics_metadata",
+            statistic_id=statistic_id,
+            unit_of_measurement=unit,
+            **({} if unit_class is None else {"unit_class": unit_class}),
+        )
+
+
 async def get_statistics(
     hass: HomeAssistant,
     token: str | None,

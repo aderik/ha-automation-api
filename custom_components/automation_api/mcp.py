@@ -26,7 +26,7 @@ from . import operations as operations_mod
 from . import stats as stats_mod
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "2.4.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "2.5.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -1055,14 +1055,15 @@ async def set_energy_prefs(
     """Change the energy dashboard settings, entities and costs alike.
     Each list passed REPLACES that whole list, so start from
     `get_energy_prefs` and send the full edited list; lists left out stay
-    as they are. Validated with Home Assistant's own schemas; `name`
-    (display name) is optional everywhere.
+    as they are. Home Assistant validates what is saved; `name` (display
+    name) is optional everywhere.
 
     `config_hash` is the one `get_energy_prefs` returned: when the settings
     changed since, nothing is saved and the call fails (read again and redo
-    the change). With `dry_run` the input is validated and the result shows
-    the `changed` lists and the resulting `prefs` without saving; show that
-    to the user before saving a change they did not spell out.
+    the change). With `dry_run` nothing is saved and the result shows the
+    `changed` lists and the resulting `prefs`; show that to the user before
+    saving a change they did not spell out. A dry run does not validate:
+    Home Assistant checks the lists when they are saved.
 
     `energy_sources` items, by `type`:
     - grid (one per connection; at least one meter or power sensor):
@@ -1197,7 +1198,8 @@ async def commission_matter(c, code: str, network_only: bool | None = None) -> A
     it expires after a few minutes. `network_only` (default true) means the
     device is already on the network; set false for a new device that must
     be set up over Bluetooth, which needs Bluetooth on the Matter server.
-    Returns `node_id`; the device appears in `list_devices` with
+    Returns `devices`, the devices Home Assistant added (id and name); a
+    device that is slow to appear shows up in `list_devices` with
     integration 'matter' shortly after. Takes up to a minute."""
     return await c(
         views.MatterCommissionView,

@@ -78,11 +78,13 @@ Authorization: Bearer <long-lived access token>
 
 The token must belong to an administrator; other tokens receive `401`.
 
-The header does more than open the door. Several endpoints act as the
-caller: automations, scripts, scenes, `input_*` helpers, creating and
-changing dashboards, the store, statistics, traces and logs. For those the integration connects to Home
-Assistant's own API with the token of the request and passes the request on,
-so Home Assistant carries it out as that user, with its own validation and
+The header does more than open the door. What belongs to another
+integration is asked of that integration, as the caller: automations,
+scripts, scenes, `input_*` helpers, creating and changing dashboards, the
+store, Matter, the energy settings, notifications, history, statistics,
+traces and logs. For those this integration connects to Home Assistant's
+own API with the token of the request and passes the request on, so Home
+Assistant carries it out as that user, with its own validation and
 permission checks. A request without `Authorization: Bearer` is refused
 there with a `400`.
 
@@ -400,7 +402,10 @@ device*. `code` is the 11-digit manual code (dashes allowed) or an `MT:` QR
 payload. For a device that is already in Google Home, Apple Home or
 SmartThings, generate a fresh code there (*Linked Matter apps & services*).
 `network_only` defaults to `true` (device already on the network); `false`
-sets up a new device over Bluetooth. Returns the new `node_id`.
+sets up a new device over Bluetooth. Returns `devices`, the devices Home
+Assistant added, each with its `id` and `name`. The code goes to the Matter
+integration's own `matter/commission` WebSocket command, sent with the
+access token of the request.
 
 ### Repairs, notifications and statistics
 
@@ -424,9 +429,10 @@ requires it from 2026.11.
 
 ### Energy
 
-The settings of Settings > Dashboards > Energy, read and written through Home
-Assistant's energy manager as the energy page does (the `energy/get_prefs`,
-`energy/validate` and `energy/save_prefs` WebSocket commands).
+The settings of Settings > Dashboards > Energy, read and written as the
+energy page does: with the energy integration's `energy/get_prefs`,
+`energy/validate` and `energy/save_prefs` WebSocket commands, sent with the
+access token of the request.
 
 | Method | Path | Description |
 |---|---|---|
@@ -442,10 +448,10 @@ description lists every field.
 Each list passed replaces the stored one; lists left out stay as they are, so
 read first and send the whole edited list. Pass the `config_hash` of that read:
 when the settings changed in between, nothing is saved and the answer is a 409
-with the current hash. `"dry_run": true` validates and returns the `changed`
-lists and the resulting `prefs` without saving. The MCP tool requires
-`config_hash`. Input is checked with Home
-Assistant's own schemas, and invalid input is a 400.
+with the current hash. `"dry_run": true` saves nothing and returns the
+`changed` lists and the resulting `prefs`. The MCP tool requires
+`config_hash`. Home Assistant validates the lists when they are saved, not
+on a dry run; invalid input is a 400 with its message.
 
 ### History, statistics, traces and logs
 
@@ -501,8 +507,9 @@ started, newest first, each with its `logger`, `message`, traceback
 (`exception`), `count` and when it first and last occurred. `level` and
 `search` filter; `limit` defaults to 50.
 
-Traces, the logbook and the system log are read with Home Assistant's own
-WebSocket commands, sent with the access token of the request.
+History, traces, the logbook and the system log are read with Home
+Assistant's own WebSocket commands, sent with the access token of the
+request.
 
 ### Long-term statistics
 

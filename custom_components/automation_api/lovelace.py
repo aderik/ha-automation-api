@@ -53,11 +53,7 @@ def _resolve_key(url_path: str | None) -> str | None:
 
 def _lovelace_data(hass: HomeAssistant):
     """Return the lovelace integration's data object (dataclass or dict)."""
-    try:
-        from homeassistant.components.lovelace.const import DOMAIN
-    except ImportError:
-        raise ValueError("lovelace integration not available in this HA")
-    data = hass.data.get(DOMAIN)
+    data = hass.data.get("lovelace")
     if data is None:
         raise ValueError("lovelace integration is not set up")
     return data

@@ -8,10 +8,16 @@ restart (e.g. Tuya re-discovering devices already managed by ZHA).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+
+from .ha_client import connect as _connect
+
+# Seconds to wait for Home Assistant to register a device that just joined
+_NEW_DEVICE_WAIT = 15
 
 
 # --- Helpers -------------------------------------------------------------
@@ -380,19 +386,37 @@ async def abort_config_flow(hass: HomeAssistant, flow_id: str) -> None:
     hass.config_entries.flow.async_abort(flow_id)
 
 
+def _matter_devices(hass: HomeAssistant) -> dict[str, str | None]:
+    """The devices of the Matter integration, id -> name."""
+    return {
+        dev.id: dev.name_by_user or dev.name
+        for dev in _iter_devices(_device_registry(hass))
+        if any(identifier[0] == "matter" for identifier in dev.identifiers)
+    }
+
+
 async def commission_matter(
-    hass: HomeAssistant, code: str, network_only: bool = True
+    hass: HomeAssistant, token: str | None, code: str, network_only: bool = True
 ) -> dict:
-    """Add a Matter device with its pairing code, like the matter/commission
-    websocket command behind the companion app's "Add Matter device"."""
+    """Add a Matter device with its pairing code: the `matter/commission`
+    websocket command behind the companion app's "Add Matter device", sent
+    as the caller (see `ha_client`)."""
     if not hass.config_entries.async_loaded_entries("matter"):
         raise ValueError("the Matter integration is not set up")
     code = code.strip()
     if not code.upper().startswith("MT:"):  # manual code: 1234-567-8901
         code = code.replace("-", "").replace(" ", "")
-    from homeassistant.components.matter.helpers import get_matter
-
-    node = await get_matter(hass).matter_client.commission_with_code(
-        code, network_only=network_only
-    )
-    return {"status": "ok", "node_id": node.node_id}
+    known = _matter_devices(hass)
+    async with _connect(hass, token, ValueError) as send:
+        await send("matter/commission", code=code, network_only=network_only)
+    # The command answers once the device has joined; Home Assistant
+    # registers it right after
+    waited = 0.0
+    while not (added := _matter_devices(hass).keys() - known.keys()) and waited < _NEW_DEVICE_WAIT:
+        await asyncio.sleep(0.5)
+        waited += 0.5
+    devices = _matter_devices(hass)
+    return {
+        "status": "ok",
+        "devices": [{"id": i, "name": devices[i]} for i in sorted(added)],
+    }

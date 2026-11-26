@@ -884,26 +884,51 @@ def main():
     else:
         raise AssertionError("entry without host was changed")
 
-    # matter commission: manual code loses its dashes, needs a loaded Matter
-    import homeassistant.components.matter.helpers as matter_helpers
+    # matter commission: the pairing code goes to Matter's own websocket
+    # command, as the caller; the answer names the devices that joined
+    matter_sent, joined = [], {}
 
-    client = MagicMock()
-    client.commission_with_code = AsyncMock(return_value=SimpleNamespace(node_id=12))
-    matter_helpers.get_matter = lambda h: SimpleNamespace(matter_client=client)
+    def device(device_id, name, domain="matter"):
+        return SimpleNamespace(id=device_id, name=name, name_by_user=None, identifiers={(domain, device_id)})
+
+    devices = [device("d0", "Old plug"), device("z1", "Zigbee lamp", "zha")]
+
+    @asynccontextmanager
+    async def fake_matter(hass, token, error):
+        async def command(type_, **fields):
+            matter_sent.append((token, type_, fields))
+            if fields["code"] == "00000000000":
+                raise error("Commissioning failed (1)")
+            joined["pending"] = device("d1", "New bulb")
+            return None
+
+        yield command
+
+    async def tick(seconds):  # Home Assistant registers the device a moment later
+        if "pending" in joined:
+            # and a device of another integration happens to appear as well
+            devices.extend([joined.pop("pending"), device("z2", "Zigbee plug", "zha")])
+
+    registry._connect = fake_matter
+    registry.asyncio = SimpleNamespace(sleep=tick)
+    registry._device_registry = lambda hass: SimpleNamespace(devices=tuple(devices))
     fake_ce.async_loaded_entries.return_value = ["matter-entry"]
-    assert asyncio.run(registry.commission_matter(ha, " 1234-567 8901 ")) == {
-        "status": "ok", "node_id": 12,
+    assert asyncio.run(registry.commission_matter(ha, "tok", " 1234-567 8901 ")) == {
+        "status": "ok", "devices": [{"id": "d1", "name": "New bulb"}],
     }
-    client.commission_with_code.assert_awaited_with("12345678901", network_only=True)
-    asyncio.run(registry.commission_matter(ha, "MT:Y.K90-Q000KA0648G00", False))
-    client.commission_with_code.assert_awaited_with("MT:Y.K90-Q000KA0648G00", network_only=False)
-    fake_ce.async_loaded_entries.return_value = []
-    try:
-        asyncio.run(registry.commission_matter(ha, "12345678901"))
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("commissioned without Matter")
+    assert matter_sent[-1] == ("tok", "matter/commission", {"code": "12345678901", "network_only": True})
+    registry._NEW_DEVICE_WAIT = 1
+    again = asyncio.run(registry.commission_matter(ha, "tok", "MT:Y.K90-Q000KA0648G00", False))
+    assert matter_sent[-1][2] == {"code": "MT:Y.K90-Q000KA0648G00", "network_only": False}
+    assert again["devices"] == [{"id": "d1", "name": "New bulb"}] or again["devices"] == [], again
+    for code, loaded, message in (("00000000000", ["e"], "Commissioning failed"), ("12345678901", [], "not set up")):
+        fake_ce.async_loaded_entries.return_value = loaded
+        try:
+            asyncio.run(registry.commission_matter(ha, "tok", code))
+        except ValueError as e:
+            assert message in str(e), e
+        else:
+            raise AssertionError(f"commissioned {code}")
     is_error, text = call("commission_matter", code=" ")
     assert is_error and "missing code" in text
 
@@ -933,78 +958,80 @@ def main():
     assert item["description"] == "Bad {missing}"  # unknown placeholder: raw text
     assert item["severity"] == "warning"
 
-    # notifications
-    mcp.views._async_get_or_create_notifications = lambda h: {
-        "n1": {"notification_id": "n1", "title": None, "message": "Login failed",
-               "created_at": datetime(2026, 11, 13)},
-    }
+    # notifications: read with the websocket command of the bell menu
+    @asynccontextmanager
+    async def fake_notifications(hass, token, error):
+        async def command(type_, **fields):
+            assert (token, type_) == ("t0ken", "persistent_notification/get"), (token, type_)
+            return [{"notification_id": "n1", "title": None, "message": "Login failed",
+                     "created_at": "2026-11-13T00:00:00+00:00", "status": "unread"}]
+
+        yield command
+
+    mcp.views._ha_connect = fake_notifications
     is_error, text = call("list_notifications")
-    assert json.loads(text)["items"][0]["message"] == "Login failed"
+    assert json.loads(text)["items"] == [
+        {"notification_id": "n1", "title": None, "message": "Login failed",
+         "created_at": "2026-11-13T00:00:00+00:00"}
+    ], text
 
-    # statistics metadata: same call as the Repairs fix, waits for the recorder
-    import homeassistant.components.recorder.statistics as rec_stats
-    import homeassistant.helpers.typing as ha_typing
+    # energy prefs: read, validated and saved by the energy integration,
+    # through its own websocket commands; only the passed lists change
+    from custom_components.automation_api import energy
 
-    seen = {}
+    stored_prefs, energy_sent = {}, []
 
-    def fake_update(hass, statistic_id, **kw):
-        seen.update(kw, statistic_id=statistic_id)
-        hass.loop.call_soon_threadsafe = lambda f: f()
-        kw["on_done"]()
-
-    rec_stats.async_update_statistics_metadata = fake_update
-    is_error, text = call(
-        "update_statistic_unit", statistic_id="sensor.x",
-        unit_of_measurement="kWh", unit_class="energy",
-    )
-    assert not is_error and json.loads(text)["status"] == "ok"
-    assert (seen["statistic_id"], seen["new_unit_of_measurement"], seen["new_unit_class"]) == (
-        "sensor.x", "kWh", "energy",
-    )
-    call("update_statistic_unit", statistic_id="sensor.x", unit_of_measurement="kWh")
-    assert seen["new_unit_class"] is ha_typing.UNDEFINED
-
-    # energy prefs: only the passed lists change, after HA's schema check
-    import probatio
-    import homeassistant.components.energy.data as energy_data
-
-    class Invalid(Exception):
-        pass
-
-    probatio.Invalid = Invalid
-
-    def schema(spec):
-        def check(value):
-            for source in value.get("energy_sources", []):
+    @asynccontextmanager
+    async def fake_energy(hass, token, error):
+        async def command(type_, **fields):
+            energy_sent.append((token, type_, fields))
+            if type_ == "energy/get_prefs":
+                if not stored_prefs:
+                    raise error("No prefs (not_found)")
+                return dict(stored_prefs)
+            if type_ == "energy/validate":
+                return {"energy_sources": [], "device_consumption": []}
+            if type_ == "energy/info":
+                return {"cost_sensors": {}, "solar_forecast_domains": ["forecast_solar"]}
+            assert type_ == "energy/save_prefs", type_
+            for source in fields.get("energy_sources", []):
                 if source.get("type") not in ("grid", "solar"):
-                    raise Invalid("expected type to be one of grid, solar")
-            return value
-        return check
+                    raise error("expected type to be one of grid, solar (invalid_format)")
+            stored_prefs.update({"energy_sources": [], "device_consumption": [], **stored_prefs, **fields})
+            return dict(stored_prefs)
 
-    probatio.Schema = schema
-    manager = MagicMock(data={"energy_sources": [], "device_consumption": []})
+        yield command
 
-    async def energy_update(update):
-        manager.data = {**manager.data, **update}
-
-    manager.async_update = AsyncMock(side_effect=energy_update)
-    energy_data.async_get_manager = AsyncMock(return_value=manager)
-    from custom_components.automation_api import http as views_mod
-
-    h = views_mod._energy_hash(manager.data)
+    energy._connect = fake_energy
+    HASS.config.currency = "EUR"
+    HASS.config_entries = SimpleNamespace(async_entries=lambda: [
+        SimpleNamespace(entry_id="f1", domain="forecast_solar", title="Roof"),
+        SimpleNamespace(entry_id="x1", domain="met", title="Weather"),
+    ])
+    prefs = json.loads(call("get_energy_prefs")[1])
+    # nothing set up yet reads as empty lists, not as an error
+    assert prefs["prefs"] == {"energy_sources": [], "device_consumption": [], "device_consumption_water": []}
+    assert prefs["currency"] == "EUR" and prefs["solar_forecast_entries"] == [
+        {"entry_id": "f1", "domain": "forecast_solar", "title": "Roof"}
+    ], prefs
+    h = prefs["config_hash"]
+    saves = lambda: [m for m in energy_sent if m[1] == "energy/save_prefs"]
     device = [{"stat_consumption": "sensor.d"}]
     is_error, text = call("set_energy_prefs", config_hash=h, device_consumption=device, dry_run=True)
-    assert not is_error and json.loads(text)["changed"] == ["device_consumption"], text
-    manager.async_update.assert_not_awaited()
+    dry = json.loads(text)
+    assert not is_error and dry["status"] == "dry_run" and dry["changed"] == ["device_consumption"], text
+    assert dry["prefs"]["device_consumption"] == device and not saves()
     is_error, text = call("set_energy_prefs", config_hash=h, device_consumption=device)
-    assert not is_error, text
-    manager.async_update.assert_awaited_with({"device_consumption": device})
+    assert not is_error and json.loads(text)["prefs"]["device_consumption"] == device, text
+    assert saves() == [("t0ken", "energy/save_prefs", {"device_consumption": device})]
+    assert json.loads(text)["config_hash"] == json.loads(call("get_energy_prefs")[1])["config_hash"]
     is_error, text = call("set_energy_prefs", config_hash=h, device_consumption=[])
-    assert is_error and "changed since" in text, text  # h is stale now
-    assert manager.async_update.await_count == 1
-    is_error, text = call("set_energy_prefs", config_hash=h, energy_sources=[{"type": "bogus"}])
-    assert is_error and "expected type" in text, text
-    is_error, text = call("set_energy_prefs", config_hash=h)
+    assert is_error and "HTTP 409" in text and "changed since" in text, text  # h is stale now
+    assert len(saves()) == 1
+    now_hash = json.loads(call("get_energy_prefs")[1])["config_hash"]
+    is_error, text = call("set_energy_prefs", config_hash=now_hash, energy_sources=[{"type": "bogus"}])
+    assert is_error and "expected type" in text and "HTTP 400" in text, text
+    is_error, text = call("set_energy_prefs", config_hash=now_hash)
     assert is_error and "pass one or more" in text, text
 
     # bad arguments are a tool error, not a transport error
@@ -1039,6 +1066,13 @@ def main():
     async def fake_history(hass, token, error):
         async def command(type_, **fields):
             asked.append((token, type_, fields))
+            if type_ == "history/history_during_period":
+                return {
+                    "sensor.temp": [
+                        {"s": "20.5", "a": {"unit_of_measurement": "°C"}, "lu": NOW.timestamp() - 3600},
+                        {"s": "21.0", "lu": NOW.timestamp() - 60, "lc": NOW.timestamp() - 120},
+                    ]
+                }
             if type_ == "trace/list":
                 return [
                     {"run_id": "old", "item_id": "a1", "timestamp": {"start": "2026-11-26T08:00:00+00:00"}},
@@ -1068,6 +1102,27 @@ def main():
         is_error, text = call(tool_name, **arguments)
         assert not is_error, text
         return json.loads(text)
+
+    # state history: the recorder's own command, its short form spelled out
+    hist = read("get_history", entity_id="sensor.temp, sensor.none", hours=2)
+    assert asked[-1] == ("t0ken", "history/history_during_period", {
+        "start_time": "2026-11-26T10:00:00+00:00", "end_time": "2026-11-26T12:00:00+00:00",
+        "entity_ids": ["sensor.temp", "sensor.none"], "significant_changes_only": False,
+        "minimal_response": True, "no_attributes": True,
+    }), asked[-1]
+    assert hist["counts"] == {"sensor.temp": 2, "sensor.none": 0}, hist
+    assert hist["items"]["sensor.temp"] == [
+        {"state": "20.5", "last_changed": "2026-11-26T11:00:00+00:00"},
+        {"state": "21.0", "last_changed": "2026-11-26T11:58:00+00:00"},
+    ], hist["items"]
+    full = read("get_history", entity_id="sensor.temp", minimal=False, no_attributes=False, significant=True)
+    assert asked[-1][2]["significant_changes_only"] is True and asked[-1][2]["minimal_response"] is False
+    assert full["items"]["sensor.temp"] == [
+        {"state": "20.5", "last_changed": "2026-11-26T11:00:00+00:00",
+         "last_updated": "2026-11-26T11:00:00+00:00", "attributes": {"unit_of_measurement": "°C"}},
+        {"state": "21.0", "last_changed": "2026-11-26T11:58:00+00:00",
+         "last_updated": "2026-11-26T11:59:00+00:00"},
+    ], full["items"]
 
     # traces: by the id of the automation, or by its entity id
     HASS.states = SimpleNamespace(
@@ -1188,6 +1243,8 @@ def main():
                     ]
                     for i in fields["statistic_ids"]
                 }
+            if type_ == "recorder/update_statistics_metadata":
+                return None
             if type_ == "recorder/adjust_sum_statistics":
                 def adjust():
                     for at in gas:
@@ -1224,6 +1281,17 @@ def main():
     assert read("get_statistics_metadata", statistic_ids=["sensor.temp"])["items"] == [METADATA["sensor.temp"]]
     assert recorder[-1][2] == {"statistic_ids": ["sensor.temp"]}
     assert len(read("get_statistics_metadata")["items"]) == 2 and recorder[-1][2] == {}
+
+    # the stored unit of a statistic: the recorder's own command, which
+    # answers when it is done
+    is_error, text = call("update_statistic_unit", statistic_id="sensor.gas",
+                          unit_of_measurement="m³", unit_class="volume")
+    assert not is_error and json.loads(text)["status"] == "ok", text
+    assert recorder[-1] == ("t0ken", "recorder/update_statistics_metadata", {
+        "statistic_id": "sensor.gas", "unit_of_measurement": "m³", "unit_class": "volume",
+    }), recorder[-1]
+    call("update_statistic_unit", statistic_id="sensor.gas", unit_of_measurement="kWh")
+    assert "unit_class" not in recorder[-1][2], recorder[-1]
 
     # get_statistics: a table per id, local times, three decimals; the window
     # starts at the start of its period on the local clock

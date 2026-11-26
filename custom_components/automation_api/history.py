@@ -1,9 +1,9 @@
 """What happened: state history, traces, the logbook and errors.
 
-State history wraps `homeassistant.components.recorder.history`. The rest is
-read with the WebSocket commands the Home Assistant UI itself uses, sent as
-the caller (see `ha_client`): the traces of automation and script runs, the
-logbook and the system log. Long-term statistics are in `stats`.
+All of it is read with the WebSocket commands the Home Assistant UI itself
+uses, sent as the caller (see `ha_client`): the state history of the
+recorder, the traces of automation and script runs, the logbook and the
+system log. Long-term statistics are in `stats`.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from homeassistant.core import HomeAssistant, State
+from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from .ha_client import connect as _connect
@@ -19,19 +19,7 @@ from .ha_client import connect as _connect
 TRACE_DOMAINS = ("automation", "script")
 
 
-def _state_to_dict(item: State | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(item, dict):
-        return item
-    return {
-        "state": item.state,
-        "last_changed": item.last_changed.isoformat() if item.last_changed else None,
-        "last_updated": item.last_updated.isoformat() if item.last_updated else None,
-    }
-
-
 def _ensure_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt_util.as_utc(dt)
     return dt_util.as_utc(dt)
 
 
@@ -68,6 +56,7 @@ def parse_time_window(
 
 async def fetch_history(
     hass: HomeAssistant,
+    token: str | None,
     *,
     entity_ids: list[str],
     start_time: datetime,
@@ -76,38 +65,31 @@ async def fetch_history(
     minimal: bool = True,
     no_attributes: bool = True,
 ) -> dict[str, list[dict[str, Any]]]:
-    from homeassistant.components.recorder import get_instance
-    from homeassistant.components.recorder.history import (
-        get_significant_states,
-        state_changes_during_period,
-    )
-
-    rec = get_instance(hass)
-
-    def _fetch():
-        if significant:
-            return get_significant_states(
-                hass,
-                start_time,
-                end_time,
-                entity_ids=entity_ids,
-                minimal_response=minimal,
-                no_attributes=no_attributes,
-            )
-        out: dict[str, list] = {}
-        for eid in entity_ids:
-            data = state_changes_during_period(
-                hass,
-                start_time,
-                end_time,
-                entity_id=eid,
-                no_attributes=no_attributes,
-            )
-            out[eid] = data.get(eid, [])
-        return out
-
-    raw = await rec.async_add_executor_job(_fetch)
-    return {eid: [_state_to_dict(s) for s in states] for eid, states in raw.items()}
+    """The recorded states of entities, oldest first, with the state each
+    had at the start of the window."""
+    async with _connect(hass, token, ValueError) as send:
+        found = await send(
+            "history/history_during_period",
+            start_time=start_time.isoformat(),
+            end_time=end_time.isoformat(),
+            entity_ids=entity_ids,
+            significant_changes_only=significant,
+            minimal_response=minimal,
+            no_attributes=no_attributes,
+        )
+    # Home Assistant answers in a short form: s, a, lu and, when it differs, lc
+    return {
+        entity_id: [
+            {
+                "state": state.get("s"),
+                "last_changed": _iso(state.get("lc", state.get("lu"))),
+                **({} if minimal else {"last_updated": _iso(state.get("lu"))}),
+                **({"attributes": state["a"]} if not no_attributes and "a" in state else {}),
+            }
+            for state in found.get(entity_id, [])
+        ]
+        for entity_id in entity_ids
+    }
 
 
 def _iso(seconds: float | None) -> str | None:

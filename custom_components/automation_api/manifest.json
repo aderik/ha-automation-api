@@ -1,11 +1,6 @@
 {
   "domain": "automation_api",
   "name": "Automation API",
-  "after_dependencies": [
-    "energy",
-    "matter",
-    "recorder"
-  ],
   "codeowners": [
     "@aderik"
   ],
@@ -14,5 +9,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/aderik/ha-automation-api/issues",
   "requirements": [],
-  "version": "2.4.0"
+  "version": "2.5.0"
 }

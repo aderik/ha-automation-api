@@ -11,14 +11,13 @@ import voluptuous as vol
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import area_registry, entity_registry, device_registry
 from homeassistant.helpers import issue_registry, translation
-from homeassistant.components.persistent_notification.helpers import (
-    _async_get_or_create_notifications,
-)
 from homeassistant.util.yaml import load_yaml
 
 from .const import DOMAIN, LOG_FILE
 from .utils import log, reload_all, reload_domain, restart
 from . import config_api
+from . import energy as energy_mod
+from .ha_client import connect as _ha_connect
 from . import helper_entries
 from . import helpers as helpers_mod
 from . import lovelace as lovelace_mod
@@ -1153,6 +1152,7 @@ class HistoryView(_AuthedView):
         try:
             items = await history_mod.fetch_history(
                 hass,
+                _bearer(request),
                 entity_ids=entity_ids,
                 start_time=start_time,
                 end_time=end_time,
@@ -1160,8 +1160,8 @@ class HistoryView(_AuthedView):
                 minimal=minimal,
                 no_attributes=no_attributes,
             )
-        except Exception as e:
-            return self.json({"error": f"history failed: {e}"}, status_code=500)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
 
         return self.json(
             {
@@ -1588,7 +1588,10 @@ class MatterCommissionView(_AuthedView):
         await log(hass, "HTTP matter commission")
         try:
             result = await registry_mod.commission_matter(
-                hass, code, network_only=body.get("network_only", True) is not False
+                hass,
+                _bearer(request),
+                code,
+                network_only=body.get("network_only", True) is not False,
             )
         except ValueError as e:
             return self.json({"error": str(e)}, status_code=400)
@@ -1656,25 +1659,28 @@ class NotificationsView(_AuthedView):
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        items = []
-        for n in _async_get_or_create_notifications(hass).values():
-            created = n.get("created_at")
-            items.append(
-                {
-                    "notification_id": n.get("notification_id"),
-                    "title": n.get("title"),
-                    "message": n.get("message"),
-                    "created_at": created.isoformat() if created else None,
-                }
-            )
+        try:
+            async with _ha_connect(hass, _bearer(request), ValueError) as send:
+                found = await send("persistent_notification/get")
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        items = [
+            {
+                "notification_id": n.get("notification_id"),
+                "title": n.get("title"),
+                "message": n.get("message"),
+                "created_at": n.get("created_at"),
+            }
+            for n in found
+        ]
         return self.json({"items": items})
 
 
 class StatisticsMetadataView(_AuthedView):
-    """Update long-term statistics metadata unit (the Repairs "Repareren"
-    button for a changed unit). Rewrites unit_of_measurement in the statistics
-    meta WITHOUT deleting history, in-process via the recorder (same code path
-    as the recorder/update_statistics_metadata websocket command)."""
+    """Read the metadata of statistics, or update the stored unit of one (the
+    Repairs "Repareren" button for a changed unit): the recorder rewrites
+    unit_of_measurement WITHOUT deleting history. Both go through the
+    recorder's own websocket commands, as the caller."""
 
     url = "/api/automation_api/statistics/metadata"
     name = "api:automation_api:statistics:metadata"
@@ -1691,12 +1697,6 @@ class StatisticsMetadataView(_AuthedView):
         return self.json({"items": items})
 
     async def post(self, request):
-        import asyncio
-        from homeassistant.components.recorder.statistics import (
-            async_update_statistics_metadata,
-        )
-        from homeassistant.helpers.typing import UNDEFINED
-
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
         body, err = await self._json_body(request)
@@ -1710,86 +1710,36 @@ class StatisticsMetadataView(_AuthedView):
 
         statistic_id = body["statistic_id"]
         unit = body["unit_of_measurement"]
-        uc = body.get("unit_class")
-        new_unit_class = UNDEFINED if uc is None else uc
-
-        await log(hass, f"HTTP update statistics metadata {statistic_id} -> {unit} ({uc})")
-        done = asyncio.Event()
+        unit_class = body.get("unit_class")
+        await log(hass, f"HTTP update statistics metadata {statistic_id} -> {unit} ({unit_class})")
         try:
-            async_update_statistics_metadata(
-                hass,
-                statistic_id,
-                new_unit_class=new_unit_class,
-                new_unit_of_measurement=unit,
-                on_done=lambda: hass.loop.call_soon_threadsafe(done.set),
-                _called_from_ws_api=True,
+            await stats_mod.update_unit(
+                hass, _bearer(request), statistic_id, unit, unit_class
             )
-            async with asyncio.timeout(30):
-                await done.wait()
-        except TimeoutError:
-            return self.json({"error": "timed out"}, status_code=504)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
         return self.json(
             {"status": "ok", "statistic_id": statistic_id, "unit_of_measurement": unit}
         )
 
 
-_ENERGY_KEYS = ("energy_sources", "device_consumption", "device_consumption_water")
-
-
-def _energy_hash(prefs) -> str:
-    """Fingerprint of the stored prefs, to refuse a save based on a stale read."""
-    import hashlib
-    import json
-
-    return hashlib.sha256(
-        json.dumps(prefs, sort_keys=True, default=str).encode()
-    ).hexdigest()[:16]
-
-
 class EnergyPrefsView(_AuthedView):
     """The energy dashboard settings (Settings > Dashboards > Energy), through
-    the energy manager as the energy/get_prefs, energy/validate and
-    energy/save_prefs websocket commands do."""
+    the energy/get_prefs, energy/validate and energy/save_prefs websocket
+    commands, as the caller."""
 
     url = "/api/automation_api/energy"
     name = "api:automation_api:energy"
 
     async def get(self, request):
-        from homeassistant.components.energy.data import async_get_manager
-        from homeassistant.components.energy.validate import async_validate
-        from homeassistant.components.energy.websocket_api import (
-            async_get_energy_platforms,
-        )
-
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
-        manager = await async_get_manager(hass)
-        prefs = manager.data or manager.default_preferences()
-        forecast_domains = set(await async_get_energy_platforms(hass))
-        return self.json(
-            {
-                "prefs": prefs,
-                "config_hash": _energy_hash(prefs),
-                "validation": (await async_validate(hass)).as_dict(),
-                # prices are in this currency (Settings > General)
-                "currency": hass.config.currency,
-                # config entries usable as config_entry_solar_forecast
-                "solar_forecast_entries": [
-                    {"entry_id": e.entry_id, "domain": e.domain, "title": e.title}
-                    for e in hass.config_entries.async_entries()
-                    if e.domain in forecast_domains
-                ],
-            }
-        )
+        try:
+            return self.json(await energy_mod.read(hass, _bearer(request)))
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
 
     async def post(self, request):
-        import probatio
-        from homeassistant.components.energy.data import (
-            DEVICE_CONSUMPTION_SCHEMA,
-            ENERGY_SOURCE_SCHEMA,
-            async_get_manager,
-        )
-
         hass: HomeAssistant = request.app["hass"]
         _require_admin(request)
         body, err = await self._json_body(request)
@@ -1797,57 +1747,27 @@ class EnergyPrefsView(_AuthedView):
             return err
         if not isinstance(body, dict):
             return self.json({"error": "body must be an object"}, status_code=400)
-        unknown = set(body) - set(_ENERGY_KEYS) - {"dry_run", "config_hash"}
-        update = {k: body[k] for k in _ENERGY_KEYS if body.get(k) is not None}
+        unknown = set(body) - set(energy_mod.KEYS) - {"dry_run", "config_hash"}
+        update = {k: body[k] for k in energy_mod.KEYS if body.get(k) is not None}
         if unknown or not update:
             return self.json(
-                {"error": f"pass one or more of {list(_ENERGY_KEYS)}"},
+                {"error": f"pass one or more of {list(energy_mod.KEYS)}"},
                 status_code=400,
             )
-        schemas = {
-            "energy_sources": ENERGY_SOURCE_SCHEMA,
-            "device_consumption": [DEVICE_CONSUMPTION_SCHEMA],
-            "device_consumption_water": [DEVICE_CONSUMPTION_SCHEMA],
-        }
+        dry_run = bool(body.get("dry_run"))
+        if not dry_run:
+            await log(hass, f"HTTP energy prefs update {sorted(update)}")
         try:
-            update = probatio.Schema({k: schemas[k] for k in update})(update)
-        except probatio.Invalid as e:
+            result = await energy_mod.save(
+                hass, _bearer(request), update, body.get("config_hash"), dry_run
+            )
+        except energy_mod.StalePrefs as e:
+            return self.json(
+                {"error": str(e), "config_hash": e.current_hash}, status_code=409
+            )
+        except ValueError as e:
             return self.json({"error": f"invalid: {e}"}, status_code=400)
-        manager = await async_get_manager(hass)
-        current = manager.data or manager.default_preferences()
-        current_hash = _energy_hash(current)
-        expected = body.get("config_hash")
-        if expected is not None and expected != current_hash:
-            return self.json(
-                {
-                    "error": "the energy settings changed since config_hash was "
-                    "read; read them again and redo the change",
-                    "config_hash": current_hash,
-                },
-                status_code=409,
-            )
-        changed = sorted(k for k in update if update[k] != current.get(k))
-        if body.get("dry_run"):
-            # Home Assistant fills in derived fields (power sensors) on save
-            return self.json(
-                {
-                    "status": "dry_run",
-                    "changed": changed,
-                    "prefs": {**current, **update},
-                    "config_hash": current_hash,
-                }
-            )
-        # no await between the hash check and the update: nothing can interleave
-        await log(hass, f"HTTP energy prefs update {changed}")
-        await manager.async_update(update)
-        return self.json(
-            {
-                "status": "ok",
-                "changed": changed,
-                "prefs": manager.data,
-                "config_hash": _energy_hash(manager.data),
-            }
-        )
+        return self.json(result)
 
 
 def async_register_http(hass: HomeAssistant):

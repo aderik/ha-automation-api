@@ -11,6 +11,13 @@ and deleting a dashboard goes through Lovelace's own
 ``ha_client``), so Lovelace validates the request and registers or removes
 the panel itself, without a restart.
 
+A dashboard can be changed as a whole, per view or card, or at any depth
+with a patch; a change can carry the ``config_hash`` of the config it was
+based on and is then refused when the dashboard changed since.
+
+The resources of custom cards go through Lovelace's ``lovelace/resources/*``
+commands in the same way.
+
 Key concepts:
 - The default dashboard has ``url_path == None`` (``default`` in this API).
 - A custom dashboard at ``/my-garden`` has ``url_path == "my-garden"``.
@@ -23,6 +30,9 @@ the frontend refreshes automatically; users may need to reload the tab.
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -192,11 +202,40 @@ async def get_config(hass: HomeAssistant, url_path: str | None) -> dict | None:
         return {"views": []}
 
 
+class StaleConfig(ValueError):
+    """The dashboard changed since the config a change was based on."""
+
+    def __init__(self, current_hash: str) -> None:
+        super().__init__("the dashboard changed since it was read; read it again")
+        self.current_hash = current_hash
+
+
+def config_hash(config: Any) -> str:
+    """Fingerprint of a dashboard config, to refuse a change based on a
+    stale read."""
+    text = json.dumps(config, sort_keys=True, default=str)
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+async def _check_fresh(hass: HomeAssistant, url_path: str | None, based_on: str | None) -> None:
+    if based_on is None:
+        return
+    current = config_hash(await get_config(hass, url_path))
+    if current != based_on:
+        raise StaleConfig(current)
+
+
 async def set_config(
-    hass: HomeAssistant, url_path: str | None, config: dict
+    hass: HomeAssistant,
+    url_path: str | None,
+    config: dict,
+    based_on: str | None = None,
 ) -> None:
     """Overwrite the full config of a dashboard through its live
-    ``LovelaceStorage`` (the frontend gets ``lovelace_updated`` at once)."""
+    ``LovelaceStorage`` (the frontend gets ``lovelace_updated`` at once).
+
+    `based_on` is the hash of the config the new one was made from; when the
+    dashboard has another config by now, nothing is saved."""
     if not isinstance(config, dict):
         raise ValueError("config must be a dict")
     if "views" not in config or not isinstance(config["views"], list):
@@ -210,7 +249,180 @@ async def set_config(
         raise ValueError(
             f"dashboard '{url_path}' is in '{mode}' mode and cannot be written"
         )
+    await _check_fresh(hass, url_path, based_on)
     await cfg.async_save(config)
+
+
+# --- Patches: a change anywhere in a config -------------------------------
+
+_MISSING = object()
+
+
+def _tokens(path: Any, index: int) -> list[str]:
+    """The steps of a JSON Pointer such as ``/views/0/sections/1/cards/-``."""
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise ValueError(f"operation {index}: 'path' must start with '/'")
+    return [t.replace("~1", "/").replace("~0", "~") for t in path.split("/")[1:]]
+
+
+def _step(node: Any, token: str, path: str, index: int) -> Any:
+    """The child of `node` that `token` names."""
+    if isinstance(node, dict):
+        if token in node:
+            return node[token]
+    elif isinstance(node, list):
+        if token.isdigit() and int(token) < len(node):
+            return node[int(token)]
+    raise ValueError(f"operation {index}: there is nothing at '{path}'")
+
+
+def apply_patch(config: dict, operations: Any) -> dict:
+    """A copy of `config` with the operations of a JSON Patch applied.
+
+    Operations are ``{"op", "path", "value"}`` with op ``add``, ``remove``,
+    ``replace`` or ``test``; ``path`` is a JSON Pointer, in which ``-`` adds
+    to the end of a list. They run in order, and one that fails leaves the
+    config as it was.
+    """
+    if not isinstance(operations, list) or not operations:
+        raise ValueError("'patch' must be a list of operations")
+    result = copy.deepcopy(config)
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, dict):
+            raise ValueError(f"operation {index}: must be an object")
+        op, path = operation.get("op"), operation.get("path")
+        if op not in ("add", "remove", "replace", "test"):
+            raise ValueError(
+                f"operation {index}: 'op' must be add, remove, replace or test"
+            )
+        if op != "remove" and "value" not in operation:
+            raise ValueError(f"operation {index}: '{op}' needs a 'value'")
+        *parents, last = _tokens(path, index)
+        node = result
+        for token in parents:
+            node = _step(node, token, path, index)
+        value = copy.deepcopy(operation.get("value"))
+        if isinstance(node, list):
+            if op == "add" and last == "-":
+                node.append(value)
+                continue
+            if not last.isdigit() or int(last) > len(node) - (op != "add"):
+                raise ValueError(f"operation {index}: there is nothing at '{path}'")
+            at = int(last)
+            if op == "add":
+                node.insert(at, value)
+            elif op == "remove":
+                del node[at]
+            elif op == "replace":
+                node[at] = value
+            elif node[at] != value:
+                raise ValueError(f"operation {index}: the value at '{path}' is not as tested")
+        elif isinstance(node, dict):
+            if op == "add":
+                node[last] = value
+            elif last not in node:
+                raise ValueError(f"operation {index}: there is nothing at '{path}'")
+            elif op == "remove":
+                del node[last]
+            elif op == "replace":
+                node[last] = value
+            elif node[last] != value:
+                raise ValueError(f"operation {index}: the value at '{path}' is not as tested")
+        else:
+            raise ValueError(f"operation {index}: there is nothing at '{path}'")
+    return result
+
+
+async def patch_config(
+    hass: HomeAssistant,
+    url_path: str | None,
+    operations: Any,
+    based_on: str | None = None,
+) -> dict:
+    """Apply a patch to the config of a dashboard and save it; returns
+    whether anything changed and the hash of the config it has now."""
+    config = await get_config(hass, url_path)
+    if config is None:
+        raise ValueError(f"dashboard '{url_path}' not found")
+    if based_on is not None and config_hash(config) != based_on:
+        raise StaleConfig(config_hash(config))
+    patched = apply_patch(config, operations)
+    changed = patched != config
+    if changed:
+        await set_config(hass, url_path, patched)
+    return {"changed": changed, "config_hash": config_hash(patched)}
+
+
+# --- Resources: the files of custom cards ---------------------------------
+
+RESOURCE_TYPES = ("module", "js", "css", "html")
+
+
+async def _resources_command(
+    hass: HomeAssistant, token: str | None, command: str, **fields: Any
+) -> Any:
+    """Send one of Lovelace's `lovelace/resources/*` commands as the caller;
+    None where Lovelace has no such resource."""
+    async with _connect(hass, token, ValueError) as send:
+        try:
+            return await send(f"lovelace/resources/{command}", **fields)
+        except ValueError as e:
+            if str(e).endswith("(not_found)"):
+                return None
+            raise
+
+
+def _resource_fields(url: Any, resource_type: Any) -> dict:
+    fields = {}
+    if url is not None:
+        if not isinstance(url, str) or not url:
+            raise ValueError("'url' must be a non-empty string")
+        fields["url"] = url
+    if resource_type is not None:
+        if resource_type not in RESOURCE_TYPES:
+            raise ValueError(f"'type' must be one of {list(RESOURCE_TYPES)}")
+        fields["res_type"] = resource_type
+    return fields
+
+
+async def list_resources(hass: HomeAssistant, token: str | None) -> list[dict]:
+    return await _resources_command(hass, token, "list") or []
+
+
+async def create_resource(
+    hass: HomeAssistant, token: str | None, url: Any, resource_type: Any = "module"
+) -> dict:
+    if url is None:
+        raise ValueError("missing 'url'")
+    return await _resources_command(
+        hass, token, "create", **_resource_fields(url, resource_type or "module")
+    )
+
+
+async def update_resource(
+    hass: HomeAssistant,
+    token: str | None,
+    resource_id: str,
+    url: Any = None,
+    resource_type: Any = None,
+) -> dict | None:
+    """Change the url or type of a resource; None if there is none with that id."""
+    fields = _resource_fields(url, resource_type)
+    if not fields:
+        raise ValueError("give a 'url' or a 'type' to change")
+    return await _resources_command(
+        hass, token, "update", resource_id=resource_id, **fields
+    )
+
+
+async def delete_resource(
+    hass: HomeAssistant, token: str | None, resource_id: str
+) -> bool:
+    known = {item["id"] for item in await list_resources(hass, token)}
+    if resource_id not in known:
+        return False
+    await _resources_command(hass, token, "delete", resource_id=resource_id)
+    return True
 
 
 # --- Views (list mutations) ---------------------------------------------

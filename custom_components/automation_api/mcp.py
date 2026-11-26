@@ -26,7 +26,7 @@ from . import operations as operations_mod
 from . import stats as stats_mod
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "2.3.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "2.4.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -541,21 +541,127 @@ async def delete_dashboard(c, url_path: str) -> Any:
 
 
 @tool
-async def get_dashboard_config(c, url_path: str = "default") -> Any:
+async def get_dashboard_config(
+    c, url_path: str = "default", with_hash: bool = False
+) -> Any:
     """Return the full Lovelace config of a dashboard.
 
     Structure: {"title": ..., "views": [{"title": ..., "cards": [...]}, ...]}.
+    A view of type 'sections' holds its cards in `sections[n].cards`.
+
+    With `with_hash` the answer is {"config_hash": ..., "config": {...}};
+    pass that hash to `patch_dashboard_config` or `set_dashboard_config` to
+    have the change refused when the dashboard was changed in between.
     """
-    return await c(views.LovelaceConfigView, "get", url_path=url_path)
+    return await c(
+        views.LovelaceConfigView,
+        "get",
+        query={"hash": with_hash or None},
+        url_path=url_path,
+    )
 
 
 @tool
-async def set_dashboard_config(c, url_path: str, config: dict[str, Any]) -> Any:
+async def set_dashboard_config(
+    c, url_path: str, config: dict[str, Any], config_hash: str | None = None
+) -> Any:
     """Overwrite the entire Lovelace config of a dashboard.
 
-    `config` must contain at least `{"views": [...]}`.
+    `config` must contain at least `{"views": [...]}`. For a change to part
+    of a dashboard, `patch_dashboard_config` is safer. With `config_hash`
+    (from `get_dashboard_config` with `with_hash`) nothing is saved when the
+    dashboard changed since that read. Returns the new `config_hash`.
     """
-    return await c(views.LovelaceConfigView, "put", body=config, url_path=url_path)
+    return await c(
+        views.LovelaceConfigView,
+        "put",
+        query={"config_hash": config_hash},
+        body=config,
+        url_path=url_path,
+    )
+
+
+@tool
+async def patch_dashboard_config(
+    c, url_path: str, patch: list[dict[str, Any]], config_hash: str | None = None
+) -> Any:
+    """Change any part of a dashboard, at any depth: a card inside a section
+    or a stack, a badge, a title. The rest of the dashboard is left as it is.
+
+    Args:
+        url_path: The dashboard; 'default' for Overview.
+        patch: JSON Patch operations, applied in order:
+            {"op": "replace", "path": "/views/0/title", "value": "Home"}
+            {"op": "add", "path": "/views/0/sections/1/cards/-",
+             "value": {"type": "tile", "entity": "light.kitchen"}}
+            {"op": "remove", "path": "/views/2/cards/0"}
+            {"op": "test", "path": "/views/0/path", "value": "home"}
+            `path` is a JSON Pointer into the config of `get_dashboard_config`
+            (escape '/' in a key as '~1' and '~' as '~0'). 'add' inserts
+            before the given list index, or at the end with '-', and sets a
+            key of an object. 'test' stops the patch when the value there
+            is not as given. Removing a list entry shifts the ones after it.
+        config_hash: From `get_dashboard_config` with `with_hash`; the patch
+            is refused when the dashboard changed since that read.
+
+    One failing operation leaves the dashboard untouched. Returns `changed`
+    and the new `config_hash`.
+    """
+    return await c(
+        views.LovelaceConfigView,
+        "patch",
+        body={"patch": patch, "config_hash": config_hash},
+        url_path=url_path,
+    )
+
+
+@tool
+async def list_dashboard_resources(c) -> Any:
+    """List the dashboard resources: the JavaScript and CSS files of custom
+    cards (Settings → Dashboards → Resources), each with `id`, `url` and
+    `type`."""
+    return await c(views.LovelaceResourcesView, "get")
+
+
+@tool
+async def create_dashboard_resource(c, url: str, resource_type: str = "module") -> Any:
+    """Add a dashboard resource, so that a custom card can be used.
+
+    Args:
+        url: Where the file is served, e.g. '/local/my-card/my-card.js'
+            for a file in <config>/www/my-card/.
+        resource_type: 'module' (default, for nearly every custom card),
+            'js', 'css' or 'html'.
+
+    A card installed from the Marketplace or HACS gets its resource from
+    the store; don't add that one here. Browsers have to reload the
+    dashboard to pick a new resource up.
+    """
+    return await c(
+        views.LovelaceResourcesView, "post", body={"url": url, "type": resource_type}
+    )
+
+
+@tool
+async def update_dashboard_resource(
+    c, resource_id: str, url: str | None = None, resource_type: str | None = None
+) -> Any:
+    """Change the `url` or type of a dashboard resource, by its `id` from
+    `list_dashboard_resources`."""
+    return await c(
+        views.LovelaceResourceItemView,
+        "patch",
+        body={"url": url, "type": resource_type},
+        resource_id=resource_id,
+    )
+
+
+@tool
+async def delete_dashboard_resource(c, resource_id: str) -> Any:
+    """Remove a dashboard resource by its `id`. Cards that need the file
+    stop working. The resource of a card installed from the Marketplace or
+    HACS is removed by uninstalling the card."""
+    return await c(views.LovelaceResourceItemView, "delete", resource_id=resource_id)
 
 
 @tool

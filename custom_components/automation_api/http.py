@@ -679,7 +679,16 @@ class LovelaceConfigView(_AuthedView):
             return self.json({"error": str(e)}, status_code=400)
         if cfg is None:
             return self.json({"error": "not found"}, status_code=404)
+        if _bool_query(request, "hash"):
+            return self.json(
+                {"config_hash": lovelace_mod.config_hash(cfg), "config": cfg}
+            )
         return self.json(cfg)
+
+    def _stale(self, e: lovelace_mod.StaleConfig):
+        return self.json(
+            {"error": str(e), "config_hash": e.current_hash}, status_code=409
+        )
 
     async def put(self, request, url_path):
         hass: HomeAssistant = request.app["hass"]
@@ -691,12 +700,110 @@ class LovelaceConfigView(_AuthedView):
             return self.json({"error": "body must be a dict"}, status_code=400)
         await log(hass, f"HTTP overwrite dashboard config {url_path}")
         try:
-            await lovelace_mod.set_config(hass, url_path, data)
+            await lovelace_mod.set_config(
+                hass, url_path, data, request.query.get("config_hash")
+            )
+        except lovelace_mod.StaleConfig as e:
+            return self._stale(e)
         except ValueError as e:
             return self.json({"error": str(e)}, status_code=400)
         except Exception as e:
             return self.json({"error": f"save failed: {e}"}, status_code=500)
-        return self.json({"status": "ok", "url_path": url_path})
+        return self.json(
+            {
+                "status": "ok",
+                "url_path": url_path,
+                "config_hash": lovelace_mod.config_hash(data),
+            }
+        )
+
+    async def patch(self, request, url_path):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        await log(hass, f"HTTP patch dashboard config {url_path}")
+        try:
+            result = await lovelace_mod.patch_config(
+                hass, url_path, data.get("patch"), data.get("config_hash")
+            )
+        except lovelace_mod.StaleConfig as e:
+            return self._stale(e)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"status": "ok", "url_path": url_path, **result})
+
+
+class LovelaceResourcesView(_AuthedView):
+    url = "/api/automation_api/lovelace/resources"
+    name = "api:automation_api:lovelace:resources"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        try:
+            items = await lovelace_mod.list_resources(hass, _bearer(request))
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"items": items})
+
+    async def post(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        await log(hass, f"HTTP create dashboard resource {data.get('url')}")
+        try:
+            item = await lovelace_mod.create_resource(
+                hass, _bearer(request), data.get("url"), data.get("type")
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"status": "ok", "resource": item})
+
+
+class LovelaceResourceItemView(_AuthedView):
+    url = "/api/automation_api/lovelace/resources/{resource_id}"
+    name = "api:automation_api:lovelace:resource"
+
+    async def patch(self, request, resource_id):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        if not isinstance(data, dict):
+            return self.json({"error": "body must be a dict"}, status_code=400)
+        await log(hass, f"HTTP update dashboard resource {resource_id}")
+        try:
+            item = await lovelace_mod.update_resource(
+                hass, _bearer(request), resource_id, data.get("url"), data.get("type")
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        if item is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"status": "ok", "resource": item})
+
+    async def delete(self, request, resource_id):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        await log(hass, f"HTTP delete dashboard resource {resource_id}")
+        try:
+            removed = await lovelace_mod.delete_resource(
+                hass, _bearer(request), resource_id
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        if not removed:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"status": "ok", "resource_id": resource_id})
 
 
 class LovelaceViewView(_AuthedView):
@@ -1763,6 +1870,8 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(LovelaceDashboardsView)
     hass.http.register_view(LovelaceDashboardItemView)
     hass.http.register_view(LovelaceConfigView)
+    hass.http.register_view(LovelaceResourcesView)
+    hass.http.register_view(LovelaceResourceItemView)
     hass.http.register_view(LovelaceViewView)
     hass.http.register_view(LovelaceViewItemView)
     hass.http.register_view(LovelaceCardView)

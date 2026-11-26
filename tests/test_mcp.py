@@ -98,7 +98,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 83, len(tools)
+    assert len(tools) == 88, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -656,12 +656,27 @@ def main():
         None: Dashboard(None, saved={"views": []}),
         "from-yaml": Dashboard({"url_path": "from-yaml", "title": "Y"}, mode="yaml"),
     }
-    lovelace_sent = []
+    lovelace_sent, resources = [], []
 
     @asynccontextmanager
     async def fake_lovelace(hass, token, error):
         async def command(type_, **fields):
             lovelace_sent.append((token, type_, dict(fields)))
+            if type_.startswith("lovelace/resources/"):
+                command = type_.removeprefix("lovelace/resources/")
+                if command == "list":
+                    return [dict(r) for r in resources]
+                if command == "create":
+                    resources.append({"id": f"r{len(resources) + 1}", "url": fields["url"], "type": fields["res_type"]})
+                    return resources[-1]
+                found = [r for r in resources if r["id"] == fields["resource_id"]]
+                if not found:
+                    raise error(f"Unable to find resource_id {fields['resource_id']} (not_found)")
+                if command == "delete":
+                    resources.remove(found[0])
+                    return None
+                found[0].update({"url": fields.get("url", found[0]["url"]), "type": fields.get("res_type", found[0]["type"])})
+                return found[0]
             command = type_.removeprefix("lovelace/dashboards/")
             if command == "create":
                 if "-" not in fields["url_path"]:
@@ -735,6 +750,114 @@ def main():
     is_error, text = call("create_dashboard", url_path="via-mcp", title="M")
     assert not is_error and json.loads(text)["dashboard"]["id"] == "via_mcp", text
     assert lovelace_sent[-1][0] == "t0ken", lovelace_sent[-1]
+
+    # a patch changes any part of a config and leaves the rest alone
+    base = {
+        "views": [
+            {"title": "Home", "path": "home", "type": "sections",
+             "sections": [{"cards": [{"type": "tile", "entity": "light.a"}]}, {"cards": []}]},
+            {"title": "Old", "cards": [{"type": "markdown", "content": "x"}], "a/b": {"~": 1}},
+        ]
+    }
+    patched = lovelace.apply_patch(base, [
+        {"op": "test", "path": "/views/0/path", "value": "home"},
+        {"op": "replace", "path": "/views/0/title", "value": "Thuis"},
+        {"op": "add", "path": "/views/0/sections/1/cards/-", "value": {"type": "tile", "entity": "light.b"}},
+        {"op": "add", "path": "/views/0/sections/0/cards/0", "value": {"type": "heading"}},
+        {"op": "add", "path": "/views/0/icon", "value": "mdi:home"},
+        {"op": "replace", "path": "/views/1/a~1b/~0", "value": 2},
+        {"op": "remove", "path": "/views/1/cards/0"},
+    ])
+    assert patched["views"][0]["title"] == "Thuis" and patched["views"][0]["icon"] == "mdi:home"
+    assert patched["views"][0]["sections"][1]["cards"] == [{"type": "tile", "entity": "light.b"}]
+    assert [c["type"] for c in patched["views"][0]["sections"][0]["cards"]] == ["heading", "tile"]
+    assert patched["views"][1]["cards"] == [] and patched["views"][1]["a/b"] == {"~": 2}
+    assert base["views"][0]["title"] == "Home" and len(base["views"][1]["cards"]) == 1  # untouched
+    for operations, message in (
+        ([], "must be a list"),
+        ([{"op": "move", "path": "/views/0"}], "operation 0: 'op' must be"),
+        ([{"op": "add", "path": "/views/0/title"}], "needs a 'value'"),
+        ([{"op": "replace", "path": "views/0", "value": 1}], "must start with '/'"),
+        ([{"op": "replace", "path": "/views/9/title", "value": 1}], "nothing at '/views/9/title'"),
+        ([{"op": "replace", "path": "/views/0/nope", "value": 1}], "nothing at '/views/0/nope'"),
+        ([{"op": "remove", "path": "/views/2"}], "nothing at '/views/2'"),
+        ([{"op": "add", "path": "/views/3", "value": {}}], "nothing at '/views/3'"),
+        ([{"op": "replace", "path": "/views/-", "value": {}}], "nothing at '/views/-'"),
+        ([{"op": "add", "path": "/views/0/title/x", "value": 1}], "nothing at '/views/0/title/x'"),
+        ([{"op": "test", "path": "/views/1", "value": {"title": "Other"}}], "the value at '/views/1' is not as tested"),
+        ([{"op": "replace", "path": "/views/0/title", "value": "A"},
+          {"op": "test", "path": "/views/0/path", "value": "other"}], "operation 1: the value at '/views/0/path' is not as tested"),
+    ):
+        try:
+            lovelace.apply_patch(base, operations)
+        except ValueError as e:
+            assert message in str(e), (operations, str(e))
+        else:
+            raise AssertionError(f"accepted {operations}")
+    assert lovelace.apply_patch(base, [{"op": "add", "path": "/views/2", "value": {"title": "New"}}])["views"][2] == {"title": "New"}
+
+    # through the tools: read with a hash, patch, and refuse a stale change
+    HASS.data = {"lovelace": SimpleNamespace(dashboards=live)}
+    live["my-dash"] = Dashboard({"id": "my_dash", "url_path": "my-dash", "title": "D"}, saved=json.loads(json.dumps(base)))
+    read_dash = lambda **kw: json.loads(call("get_dashboard_config", url_path="my-dash", **kw)[1])
+    assert read_dash() == base
+    with_hash = read_dash(with_hash=True)
+    assert with_hash["config"] == base and len(with_hash["config_hash"]) == 16, with_hash
+    is_error, text = call(
+        "patch_dashboard_config", url_path="my-dash", config_hash=with_hash["config_hash"],
+        patch=[{"op": "add", "path": "/views/0/sections/1/cards/-", "value": {"type": "tile", "entity": "light.b"}}],
+    )
+    result = json.loads(text)
+    assert not is_error and result["changed"] is True and result["config_hash"] != with_hash["config_hash"], text
+    assert live["my-dash"].saved["views"][0]["sections"][1]["cards"] == [{"type": "tile", "entity": "light.b"}]
+    assert result["config_hash"] == read_dash(with_hash=True)["config_hash"]
+    # the hash of the earlier read is stale now: nothing is saved
+    kept = json.dumps(live["my-dash"].saved)
+    is_error, text = call(
+        "patch_dashboard_config", url_path="my-dash", config_hash=with_hash["config_hash"],
+        patch=[{"op": "replace", "path": "/views/0/title", "value": "Stale"}],
+    )
+    assert is_error and "HTTP 409" in text and result["config_hash"] in text, text
+    is_error, text = call("set_dashboard_config", url_path="my-dash", config={"views": []},
+                          config_hash=with_hash["config_hash"])
+    assert is_error and "HTTP 409" in text and json.dumps(live["my-dash"].saved) == kept, text
+    # a patch that fails halfway or changes nothing saves nothing
+    is_error, text = call("patch_dashboard_config", url_path="my-dash", patch=[
+        {"op": "replace", "path": "/views/0/title", "value": "Half"},
+        {"op": "remove", "path": "/views/7"},
+    ])
+    assert is_error and "operation 1" in text and json.dumps(live["my-dash"].saved) == kept, text
+    stored = live["my-dash"].saved
+    same = json.loads(call("patch_dashboard_config", url_path="my-dash",
+                           patch=[{"op": "replace", "path": "/views/0/title", "value": "Home"}])[1])
+    assert same["changed"] is False and same["config_hash"] == result["config_hash"], same
+    assert live["my-dash"].saved is stored  # not saved again
+    is_error, text = call("patch_dashboard_config", url_path="my-dash", patch=[{"op": "remove", "path": "/views"}])
+    assert is_error and "must contain a 'views' list" in text, text
+    is_error, text = call("patch_dashboard_config", url_path="nope", patch=[{"op": "remove", "path": "/views/0"}])
+    assert is_error and "not found" in text, text
+    saved = json.loads(call("set_dashboard_config", url_path="my-dash", config={"views": []},
+                            config_hash=result["config_hash"])[1])
+    assert saved["config_hash"] == read_dash(with_hash=True)["config_hash"] and live["my-dash"].saved == {"views": []}
+
+    # resources: the files of custom cards, through Lovelace's own commands
+    made = json.loads(call("create_dashboard_resource", url="/local/card/card.js")[1])
+    assert made == {"status": "ok", "resource": {"id": "r1", "url": "/local/card/card.js", "type": "module"}}, made
+    assert lovelace_sent[-1] == ("t0ken", "lovelace/resources/create", {"url": "/local/card/card.js", "res_type": "module"})
+    assert json.loads(call("list_dashboard_resources")[1]) == {"items": [made["resource"]]}
+    changed = json.loads(call("update_dashboard_resource", resource_id="r1", url="/local/card/card.js?v=2")[1])
+    assert changed["resource"]["url"].endswith("?v=2") and changed["resource"]["type"] == "module", changed
+    assert lovelace_sent[-1][2] == {"resource_id": "r1", "url": "/local/card/card.js?v=2"}
+    for tool_name, arguments, message in (
+        ("create_dashboard_resource", {"url": "/x.css", "resource_type": "stylesheet"}, "'type' must be one of"),
+        ("create_dashboard_resource", {"url": ""}, "non-empty string"),
+        ("update_dashboard_resource", {"resource_id": "r1"}, "give a 'url' or a 'type'"),
+        ("update_dashboard_resource", {"resource_id": "nope", "url": "/y.js"}, "HTTP 404"),
+        ("delete_dashboard_resource", {"resource_id": "nope"}, "HTTP 404"),
+    ):
+        is_error, text = call(tool_name, **arguments)
+        assert is_error and message in text, (tool_name, text)
+    assert call("delete_dashboard_resource", resource_id="r1")[0] is False and resources == []
 
     # config entry host: only the address is exposed, and only it is changed
     entry_obj = SimpleNamespace(

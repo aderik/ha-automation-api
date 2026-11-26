@@ -32,7 +32,8 @@ process to run.
   whether the entities followed
 - Helpers (`input_*`), template entities and `history_stats` sensors as
   ordinary UI helpers
-- Storage-mode Lovelace dashboards: dashboards, views and cards
+- Storage-mode Lovelace dashboards: dashboards, views and cards, a patch
+  for a change at any depth, and the resources of custom cards
 - Entity, device and config-entry registries, including reload, enable,
   disable and remove
 - Adding integrations through their config flows, including discovered ones
@@ -272,10 +273,48 @@ without a restart, and Lovelace's rules apply: `url_path` needs a hyphen
 | `POST` | `/api/automation_api/lovelace/dashboards` | Create (`{url_path, title, icon?, show_in_sidebar?, require_admin?}`) |
 | `PATCH` `DELETE` | `/api/automation_api/lovelace/dashboards/{url_path}` | Update metadata or delete |
 | `GET` `PUT` | `/api/automation_api/lovelace/config/{url_path}` | Read or overwrite the full config (`{views: [...]}`) |
+| `PATCH` | `/api/automation_api/lovelace/config/{url_path}` | Change any part of the config (`{patch: [...], config_hash?}`) |
 | `POST` | `/api/automation_api/lovelace/view/{url_path}` | Append a view |
 | `PUT` `DELETE` | `/api/automation_api/lovelace/view/{url_path}/{view_index}` | Replace or delete a view |
 | `POST` | `/api/automation_api/lovelace/card/{url_path}/{view_index}` | Append a card |
 | `PUT` `DELETE` | `/api/automation_api/lovelace/card/{url_path}/{view_index}/{card_index}` | Replace or delete a card |
+| `GET` `POST` | `/api/automation_api/lovelace/resources` | List the resources of custom cards, or add one (`{url, type?}`) |
+| `PATCH` `DELETE` | `/api/automation_api/lovelace/resources/{id}` | Change (`{url?, type?}`) or remove a resource |
+
+**A patch** changes any part of a dashboard and leaves the rest as it is.
+The card endpoints reach the cards directly in a view; a patch also reaches
+cards inside a section or a stack, badges and titles. `patch` is a list of
+JSON Patch operations, applied in order:
+
+```bash
+curl -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  http://ha:8123/api/automation_api/lovelace/config/my-dashboard \
+  -d '{"patch":[
+        {"op":"test","path":"/views/0/path","value":"home"},
+        {"op":"add","path":"/views/0/sections/1/cards/-","value":{"type":"tile","entity":"light.kitchen"}},
+        {"op":"replace","path":"/views/0/title","value":"Living room"},
+        {"op":"remove","path":"/views/2/cards/0"}]}'
+# {"status":"ok","url_path":"my-dashboard","changed":true,"config_hash":"c7347dba8eb427b7"}
+```
+
+`op` is `add`, `remove`, `replace` or `test`. `path` is a JSON Pointer into
+the config (`~1` for a `/` in a key, `~0` for a `~`). `add` inserts before
+the given list index, or at the end with `-`, and sets a key of an object.
+`test` stops the patch when the value there is not as given. Removing a list
+entry shifts the ones after it. One failing operation leaves the dashboard
+untouched.
+
+**Changes made in between** are caught with a `config_hash`. Read the
+config with `?hash=true` to get `{"config_hash", "config"}`, and send the
+hash along: in the body of a `PATCH`, or as `?config_hash=` on a `PUT`. When
+the dashboard has another config by now, nothing is saved and the answer is
+a `409` with the current hash. Every save answers with the new hash.
+
+**Resources** are the JavaScript and CSS files of custom cards (*Settings →
+Dashboards → Resources*); `type` is `module` (the default), `js`, `css` or
+`html`. They go through Lovelace's own `lovelace/resources/*` commands, sent
+with the access token of the request. A card installed from the Marketplace
+or HACS gets its resource from the store; leave those to it.
 
 ### Registries
 
@@ -554,7 +593,7 @@ There is no endpoint that deletes statistics.
 ## MCP server
 
 The integration serves an MCP server over Streamable HTTP at
-`/api/automation_api/mcp`. It offers 83 tools: one for every REST endpoint,
+`/api/automation_api/mcp`. It offers 88 tools: one for every REST endpoint,
 plus four for controlling devices. It uses the same administrator bearer
 token. A tool runs its REST endpoint in-process, so both behave the same.
 
@@ -609,7 +648,7 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | `input_*` helpers | Yes, as UI helpers | No | Yes, as UI helpers |
 | Template entities, `history_stats` | Yes, as UI helpers | No | Template helpers |
 | Other helpers (groups, `statistics`, ...) | Through the config flow tools | No | Yes |
-| Dashboards | Dashboards, views and single cards | No | Yes |
+| Dashboards | Yes | No | Yes |
 | Entity and device registry | Yes | No | Yes |
 | Add integrations (config flows) | Yes | No | Yes |
 | Add devices | Matter, with a pairing code | No | Matter, Z-Wave, Zigbee and Thread |
@@ -620,7 +659,7 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
 | Safeguards | Admin only, store changes opt-in, Home Assistant validates every change, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 83 | Depends on Assist | 87 |
+| Tools | 88 | Depends on Assist | 87 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,

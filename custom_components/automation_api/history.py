@@ -1,16 +1,35 @@
-"""History endpoint backed by HA's recorder.
+"""What happened: state history, statistics, traces, the logbook and errors.
 
-Wraps `homeassistant.components.recorder.history` so external clients can
-query state-change history for any entity with an administrator token.
+State history wraps `homeassistant.components.recorder.history`. The rest is
+read with the WebSocket commands the Home Assistant UI itself uses, sent as
+the caller (see `ha_client`): long-term statistics, the traces of automation
+and script runs, the logbook and the system log.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.core import HomeAssistant, State
 from homeassistant.util import dt as dt_util
+
+from .ha_client import connect as _connect
+
+# Seconds a statistics period spans, to size an answer before asking for it
+_PERIODS = {
+    "5minute": 300,
+    "hour": 3600,
+    "day": 86400,
+    "week": 7 * 86400,
+    "month": 30 * 86400,
+    "year": 365 * 86400,
+}
+
+# The most statistics rows one answer holds
+MAX_ROWS = 5000
+
+TRACE_DOMAINS = ("automation", "script")
 
 
 def _state_to_dict(item: State | dict[str, Any]) -> dict[str, Any]:
@@ -102,3 +121,189 @@ async def fetch_history(
 
     raw = await rec.async_add_executor_job(_fetch)
     return {eid: [_state_to_dict(s) for s in states] for eid, states in raw.items()}
+
+
+# --- Long-term statistics -------------------------------------------------
+
+def _iso(seconds: float | None) -> str | None:
+    """An ISO 8601 time for seconds since the epoch."""
+    if seconds is None:
+        return None
+    return datetime.fromtimestamp(seconds, timezone.utc).isoformat()
+
+
+async def list_statistics(
+    hass: HomeAssistant,
+    token: str | None,
+    *,
+    search: str | None = None,
+    kind: str | None = None,
+) -> list[dict]:
+    """The statistics the recorder keeps; `kind` is "mean" or "sum"."""
+    if kind not in (None, "mean", "sum"):
+        raise ValueError("type must be 'mean' or 'sum'")
+    async with _connect(hass, token, ValueError) as send:
+        found = await send(
+            "recorder/list_statistic_ids", **({"statistic_type": kind} if kind else {})
+        )
+    wanted = (search or "").lower()
+    return [
+        {
+            "statistic_id": item["statistic_id"],
+            "name": item.get("name"),
+            "unit_of_measurement": item.get("display_unit_of_measurement"),
+            "unit_class": item.get("unit_class"),
+            "has_mean": item.get("has_mean"),
+            "has_sum": item.get("has_sum"),
+            "source": item.get("source"),
+        }
+        for item in found
+        if wanted in item["statistic_id"].lower()
+        or wanted in (item.get("name") or "").lower()
+    ]
+
+
+async def fetch_statistics(
+    hass: HomeAssistant,
+    token: str | None,
+    *,
+    statistic_ids: list[str],
+    start_time: datetime,
+    end_time: datetime,
+    period: str = "hour",
+    types: list[str] | None = None,
+) -> dict[str, list[dict]]:
+    """Statistics rows per statistic id: `mean`, `min` and `max` for measured
+    values, `sum`, `state` and `change` for totals such as energy."""
+    if period not in _PERIODS:
+        raise ValueError(f"period must be one of {list(_PERIODS)}")
+    rows = (end_time - start_time).total_seconds() / _PERIODS[period] * len(statistic_ids)
+    if rows > MAX_ROWS:
+        raise ValueError(
+            f"that is about {int(rows)} rows, more than {MAX_ROWS}; use a "
+            "shorter window, a coarser period or fewer statistics"
+        )
+    async with _connect(hass, token, ValueError) as send:
+        found = await send(
+            "recorder/statistics_during_period",
+            start_time=start_time.isoformat(),
+            end_time=end_time.isoformat(),
+            statistic_ids=statistic_ids,
+            period=period,
+            **({"types": types} if types else {}),
+        )
+    return {
+        statistic_id: [
+            {
+                "start": _iso(row["start"] / 1000),
+                "end": _iso(row["end"] / 1000),
+                **{
+                    k: v
+                    for k, v in row.items()
+                    if k not in ("start", "end") and v is not None
+                },
+            }
+            for row in rows
+        ]
+        for statistic_id, rows in found.items()
+    }
+
+
+# --- Traces of automation and script runs ---------------------------------
+
+def trace_item_id(hass: HomeAssistant, domain: str, item: str) -> str:
+    """The id Home Assistant keeps traces under: for an automation the `id`
+    of its config, for a script its object id. `item` may be that id, or the
+    entity id with or without its domain."""
+    if domain not in TRACE_DOMAINS:
+        raise ValueError(f"domain must be one of {list(TRACE_DOMAINS)}")
+    object_id = item.removeprefix(f"{domain}.")
+    if domain == "script":
+        return object_id
+    state = hass.states.get(f"automation.{object_id}")
+    return (state.attributes.get("id") if state else None) or object_id
+
+
+async def list_traces(
+    hass: HomeAssistant, token: str | None, domain: str, item: str | None = None
+) -> list[dict]:
+    """The stored runs, newest first: of one automation or script, or of all."""
+    if domain not in TRACE_DOMAINS:
+        raise ValueError(f"domain must be one of {list(TRACE_DOMAINS)}")
+    fields = {"item_id": trace_item_id(hass, domain, item)} if item else {}
+    async with _connect(hass, token, ValueError) as send:
+        found = await send("trace/list", domain=domain, **fields)
+    return sorted(found, key=lambda t: t["timestamp"]["start"], reverse=True)
+
+
+async def get_trace(
+    hass: HomeAssistant, token: str | None, domain: str, item: str, run_id: str
+) -> dict | None:
+    """One run, step by step, as the trace view of the editor shows it; None
+    if Home Assistant no longer has it."""
+    item_id = trace_item_id(hass, domain, item)
+    async with _connect(hass, token, ValueError) as send:
+        try:
+            return await send("trace/get", domain=domain, item_id=item_id, run_id=run_id)
+        except ValueError as e:
+            if str(e).endswith("(not_found)"):
+                return None
+            raise
+
+
+# --- The logbook and the system log ---------------------------------------
+
+async def fetch_logbook(
+    hass: HomeAssistant,
+    token: str | None,
+    *,
+    start_time: datetime,
+    end_time: datetime,
+    entity_ids: list[str] | None = None,
+) -> list[dict]:
+    """Logbook entries, oldest first: what changed, when, and what caused it."""
+    async with _connect(hass, token, ValueError) as send:
+        found = await send(
+            "logbook/get_events",
+            start_time=start_time.isoformat(),
+            end_time=end_time.isoformat(),
+            **({"entity_ids": entity_ids} if entity_ids else {}),
+        )
+    return [{**event, "when": _iso(event.get("when"))} for event in found]
+
+
+async def fetch_system_log(
+    hass: HomeAssistant,
+    token: str | None,
+    *,
+    level: str | None = None,
+    search: str | None = None,
+) -> list[dict]:
+    """The errors and warnings of Settings → System → Logs, newest first.
+    Home Assistant keeps the latest ones since its start and counts repeats."""
+    async with _connect(hass, token, ValueError) as send:
+        found = await send("system_log/list")
+    wanted = (search or "").lower()
+    entries = []
+    for entry in found:
+        message = "\n".join(entry.get("message") or [])
+        exception = entry.get("exception") or None
+        if level and entry.get("level", "").lower() != level.lower():
+            continue
+        text = f"{entry.get('name')} {message} {exception or ''}".lower()
+        if wanted not in text:
+            continue
+        source = entry.get("source") or []
+        entries.append(
+            {
+                "level": entry.get("level"),
+                "logger": entry.get("name"),
+                "message": message,
+                "exception": exception,
+                "source": ":".join(str(part) for part in source),
+                "count": entry.get("count"),
+                "first_occurred": _iso(entry.get("first_occurred")),
+                "last_occurred": _iso(entry.get("timestamp")),
+            }
+        )
+    return sorted(entries, key=lambda e: e["last_occurred"] or "", reverse=True)

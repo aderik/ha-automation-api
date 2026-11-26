@@ -98,7 +98,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 74, len(tools)
+    assert len(tools) == 80, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -899,6 +899,140 @@ def main():
         pass
     else:
         raise AssertionError("non-admin was not rejected")
+
+    # what happened: statistics, traces, the logbook and the system log are
+    # read with Home Assistant's own websocket commands, as the caller
+    from datetime import datetime, timedelta, timezone
+
+    from custom_components.automation_api import history
+
+    NOW = datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc)
+    history.dt_util = SimpleNamespace(
+        utcnow=lambda: NOW, parse_datetime=datetime.fromisoformat, as_utc=lambda value: value
+    )
+    asked = []
+    hour = 3600 * 1000
+    t0 = int(NOW.timestamp() * 1000) - 2 * hour
+
+    @asynccontextmanager
+    async def fake_history(hass, token, error):
+        async def command(type_, **fields):
+            asked.append((token, type_, fields))
+            if type_ == "recorder/list_statistic_ids":
+                return [
+                    {"statistic_id": "sensor.temp", "name": None, "has_mean": True, "has_sum": False,
+                     "display_unit_of_measurement": "°C", "unit_class": "temperature", "source": "recorder", "mean_type": 1},
+                    {"statistic_id": "energy:grid", "name": "Grid import", "has_mean": False, "has_sum": True,
+                     "display_unit_of_measurement": "kWh", "unit_class": "energy", "source": "energy"},
+                ]
+            if type_ == "recorder/statistics_during_period":
+                return {
+                    "sensor.temp": [
+                        {"start": t0, "end": t0 + hour, "mean": 20.5, "min": 20.0, "max": 21.0, "last_reset": None},
+                        {"start": t0 + hour, "end": t0 + 2 * hour, "mean": 21.5, "min": 21.0, "max": 22.0, "last_reset": None},
+                    ]
+                }
+            if type_ == "trace/list":
+                return [
+                    {"run_id": "old", "item_id": "a1", "timestamp": {"start": "2026-11-26T08:00:00+00:00"}},
+                    {"run_id": "new", "item_id": "a1", "timestamp": {"start": "2026-11-26T09:00:00+00:00"}},
+                ]
+            if type_ == "trace/get":
+                if fields["run_id"] == "gone":
+                    raise error("The trace could not be found (not_found)")
+                return {"run_id": fields["run_id"], "trace": {"trigger/0": [{"path": "trigger/0"}]}}
+            if type_ == "logbook/get_events":
+                return [{"entity_id": f"light.l{i}", "state": "on", "when": NOW.timestamp() - 60 + i} for i in range(5)]
+            if type_ == "system_log/list":
+                return [
+                    {"name": "homeassistant.core", "message": ["first line", "second line"], "level": "ERROR",
+                     "source": ["core.py", 2962], "timestamp": NOW.timestamp() - 10, "exception": "Traceback: boom",
+                     "count": 2, "first_occurred": NOW.timestamp() - 100},
+                    {"name": "custom.thing", "message": ["slow update"], "level": "WARNING", "source": ["x.py", 1],
+                     "timestamp": NOW.timestamp() - 5, "exception": "", "count": 1, "first_occurred": NOW.timestamp() - 5},
+                ]
+            raise AssertionError(type_)
+
+        yield command
+
+    history._connect = fake_history
+
+    def read(tool_name, **arguments):
+        is_error, text = call(tool_name, **arguments)
+        assert not is_error, text
+        return json.loads(text)
+
+    ids = read("list_statistics", search="GRID", statistic_type="sum")["items"]
+    assert ids == [
+        {"statistic_id": "energy:grid", "name": "Grid import", "unit_of_measurement": "kWh",
+         "unit_class": "energy", "has_mean": False, "has_sum": True, "source": "energy"}
+    ], ids
+    assert asked[-1] == ("t0ken", "recorder/list_statistic_ids", {"statistic_type": "sum"})
+    assert len(read("list_statistics")["items"]) == 2 and asked[-1][2] == {}
+    is_error, text = call("list_statistics", statistic_type="bogus")
+    assert is_error and "HTTP 400" in text, text
+
+    stats = read("get_statistics", statistic_id="sensor.temp, sensor.other", hours=2, types="mean,max")
+    assert stats["period"] == "hour" and stats["start"] == "2026-11-26T10:00:00+00:00", stats
+    assert stats["items"]["sensor.temp"][0] == {
+        "start": "2026-11-26T10:00:00+00:00", "end": "2026-11-26T11:00:00+00:00",
+        "mean": 20.5, "min": 20.0, "max": 21.0,
+    }, stats["items"]
+    assert asked[-1][2] == {
+        "start_time": "2026-11-26T10:00:00+00:00", "end_time": "2026-11-26T12:00:00+00:00",
+        "statistic_ids": ["sensor.temp", "sensor.other"], "period": "hour", "types": ["mean", "max"],
+    }, asked[-1]
+    # an answer too large to be useful is refused before it is asked for
+    before = len(asked)
+    is_error, text = call("get_statistics", statistic_id="sensor.temp", period="5minute", days=30)
+    assert is_error and "about 8640 rows" in text and len(asked) == before, text
+    assert not call("get_statistics", statistic_id="sensor.temp", period="day", days=365)[0]
+    is_error, text = call("get_statistics", statistic_id="sensor.temp", period="decade")
+    assert is_error and "period must be one of" in text, text
+
+    # traces: by the id of the automation, or by its entity id
+    HASS.states = SimpleNamespace(
+        get={"automation.living_room": SimpleNamespace(attributes={"id": "a1"})}.get
+    )
+    runs = read("list_traces", item_id="automation.living_room")["items"]
+    assert [r["run_id"] for r in runs] == ["new", "old"], runs
+    assert asked[-1][1:] == ("trace/list", {"domain": "automation", "item_id": "a1"})
+    read("list_traces", item_id="a1")
+    assert asked[-1][2] == {"domain": "automation", "item_id": "a1"}
+    read("list_traces", domain="script", item_id="script.water")
+    assert asked[-1][2] == {"domain": "script", "item_id": "water"}
+    read("list_traces")
+    assert asked[-1][2] == {"domain": "automation"}
+    is_error, text = call("list_traces", domain="scene")
+    assert is_error and "domain must be one of" in text, text
+    assert read("get_trace", item_id="living_room", run_id="new")["trace"] == {"trigger/0": [{"path": "trigger/0"}]}
+    assert asked[-1][2] == {"domain": "automation", "item_id": "a1", "run_id": "new"}
+    is_error, text = call("get_trace", item_id="a1", run_id="gone")
+    assert is_error and "HTTP 404" in text, text
+
+    book = read("get_logbook", entity_id="light.l1,light.l2", hours=1, limit=2)
+    assert book["total"] == 5 and [e["entity_id"] for e in book["items"]] == ["light.l3", "light.l4"], book
+    assert book["items"][-1]["when"] == "2026-11-26T11:59:04+00:00", book["items"][-1]
+    assert asked[-1][2] == {
+        "start_time": "2026-11-26T11:00:00+00:00", "end_time": "2026-11-26T12:00:00+00:00",
+        "entity_ids": ["light.l1", "light.l2"],
+    }, asked[-1]
+    assert "entity_ids" not in (read("get_logbook"), asked[-1][2])[1]
+    is_error, text = call("get_logbook", limit=0)
+    assert is_error and "limit must be at least 1" in text, text
+
+    log = read("get_system_log")
+    assert log["total"] == 2 and [e["level"] for e in log["items"]] == ["WARNING", "ERROR"], log
+    assert log["items"][1] == {
+        "level": "ERROR", "logger": "homeassistant.core", "message": "first line\nsecond line",
+        "exception": "Traceback: boom", "source": "core.py:2962", "count": 2,
+        "first_occurred": "2026-11-26T11:58:20+00:00", "last_occurred": "2026-11-26T11:59:50+00:00",
+    }, log["items"][1]
+    assert log["items"][0]["exception"] is None
+    assert [e["logger"] for e in read("get_system_log", level="error")["items"]] == ["homeassistant.core"]
+    assert [e["logger"] for e in read("get_system_log", search="BOOM")["items"]] == ["homeassistant.core"]
+    newest = read("get_system_log", limit=1)
+    assert newest["total"] == 2 and [e["level"] for e in newest["items"]] == ["WARNING"], newest
 
     # operations: service calls whose effect can be read back afterwards
     from custom_components.automation_api import operations

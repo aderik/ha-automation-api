@@ -11,8 +11,8 @@ A Home Assistant custom integration that lets AI agents (Claude, Cursor or any
 other MCP client) and scripts (n8n, Make, CI pipelines) configure Home
 Assistant. It exposes a REST API for what the built-in API leaves out:
 automations, scripts, scenes, helpers, template entities, Lovelace
-dashboards, registries, integrations, the Marketplace (HACS) and recorder
-history.
+dashboards, registries, integrations, the Marketplace (HACS), and history,
+statistics, traces and logs.
 
 It writes no configuration files of its own. Everything is handed to the
 part of Home Assistant that owns it, the way the UI does: the config API of
@@ -41,7 +41,8 @@ process to run.
 - Adding Matter devices with a pairing code
 - Reading repairs and persistent notifications; fixing a statistic's unit
 - Reading and changing the energy dashboard settings
-- Recorder history with per-entity change counts
+- What happened: state history with change counts, long-term statistics,
+  the traces of automation and script runs, the logbook and the error log
 - Built-in MCP server (Streamable HTTP) with a tool for every endpoint
 - Authenticated with Home Assistant's own access tokens (administrator)
 - No configuration files written: every change goes through Home
@@ -75,8 +76,8 @@ Authorization: Bearer <long-lived access token>
 The token must belong to an administrator; other tokens receive `401`.
 
 The header does more than open the door. Several endpoints act as the
-caller: automations, scripts, `input_*` helpers, creating and changing
-dashboards, and the store. For those the integration connects to Home
+caller: automations, scripts, scenes, `input_*` helpers, creating and
+changing dashboards, the store, and statistics, traces and logs. For those the integration connects to Home
 Assistant's own API with the token of the request and passes the request on,
 so Home Assistant carries it out as that user, with its own validation and
 permission checks. A request without `Authorization: Bearer` is refused
@@ -405,21 +406,34 @@ lists and the resulting `prefs` without saving. The MCP tool requires
 `config_hash`. Input is checked with Home
 Assistant's own schemas, and invalid input is a 400.
 
-### History
+### History, statistics, traces and logs
 
-`GET /api/automation_api/history?entity_id=sensor.x&hours=24` returns the
-recorder's state changes for one or more entities (`entity_id=sensor.x,sensor.y`).
+Read-only endpoints for finding out what happened and why.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/automation_api/history?entity_id=&hours=` | Every recorded state change of one or more entities |
+| `GET` | `/api/automation_api/statistics?search=&type=` | The long-term statistics the recorder keeps; `type` is `mean` or `sum` |
+| `GET` | `/api/automation_api/statistics/data?statistic_id=&period=&days=&types=` | Statistics rows per `5minute`, `hour` (default), `day`, `week`, `month` or `year` |
+| `GET` | `/api/automation_api/traces/{domain}?item_id=` | The stored runs of automations or scripts, newest first; `domain` is `automation` or `script` |
+| `GET` | `/api/automation_api/traces/{domain}/{item_id}/{run_id}` | One run, step by step |
+| `GET` | `/api/automation_api/logbook?entity_id=&hours=&limit=` | The logbook: what changed and what caused it |
+| `GET` | `/api/automation_api/system_log?level=&search=&limit=` | The errors and warnings of *Settings → System → Logs* |
+
+All of them that take a time window take the same parameters; the default is
+the last 24 hours.
 
 | Parameter | Description |
 |---|---|
 | `hours`, `days` | Window length, ending at `end` (default: now) |
 | `start`, `end` | Absolute ISO 8601 bounds; override `hours` and `days` |
-| `significant=true` | Use `get_significant_states` instead of every change |
-| `minimal=false` | Include `last_updated` next to `last_changed` |
-| `no_attributes=false` | Keep attributes in the payload |
 
-The response carries a `counts` map per entity, which shows flapping sensors
-at a glance:
+Several entity ids or statistic ids go in one parameter, separated by commas.
+
+**History** returns the recorder's state changes. `significant=true` uses
+`get_significant_states` instead of every change, `minimal=false` adds
+`last_updated`, and `no_attributes=false` keeps the attributes. The response
+carries a `counts` map per entity, which shows flapping sensors at a glance:
 
 ```json
 {
@@ -430,10 +444,44 @@ at a glance:
 }
 ```
 
+**Statistics** are the aggregates Home Assistant keeps after the detailed
+history is purged: `mean`, `min` and `max` for measured values, and `sum`,
+`state` and `change` for totals such as energy (`change` is the use within
+each row). `types` limits the values returned. One answer holds at most 5000
+rows; a longer window needs a coarser `period`.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://ha:8123/api/automation_api/statistics/data?statistic_id=sensor.energy_import&period=day&days=7&types=change"
+# {"period":"day","items":{"sensor.energy_import":[
+#   {"start":"2026-11-24T23:00:00+00:00","end":"2026-11-25T23:00:00+00:00","change":16.25}, ...]}}
+```
+
+**Traces** show whether and how an automation or script ran. The list gives
+each run's `run_id`, `trigger`, `script_execution` (`finished`,
+`failed_conditions`, `error`, ...) and `last_step`; a single run gives every
+step with its result, the trigger data and any error, as the trace view of
+the editor does. `item_id` is the automation's id or its entity id. Home
+Assistant keeps the last few runs of each automation.
+
+**The logbook** lists what changed in order, with what caused it where Home
+Assistant knows (`context_entity_id`, `context_service`, `context_user_id`).
+`limit` (default 200) keeps the latest entries; `total` tells how many there
+were.
+
+**The system log** holds the errors and warnings since Home Assistant
+started, newest first, each with its `logger`, `message`, traceback
+(`exception`), `count` and when it first and last occurred. `level` and
+`search` filter; `limit` defaults to 50.
+
+Statistics, traces, the logbook and the system log are read with Home
+Assistant's own WebSocket commands, sent with the access token of the
+request.
+
 ## MCP server
 
 The integration serves an MCP server over Streamable HTTP at
-`/api/automation_api/mcp`. It offers 74 tools: one for every REST endpoint,
+`/api/automation_api/mcp`. It offers 80 tools: one for every REST endpoint,
 plus four for controlling devices. It uses the same administrator bearer
 token. A tool runs its REST endpoint in-process, so both behave the same.
 
@@ -494,11 +542,11 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Add devices | Matter, with a pairing code | No | Matter, Z-Wave, Zigbee and Thread |
 | HACS / Marketplace | Search, install and remove through either; changes off by default | No | Yes |
 | Energy dashboard settings | Read, validate and change, costs included; dry run and stale-read check | No | Yes, with a dry run |
-| History | Yes, with change counts | No | Yes, plus statistics, traces and logs |
-| Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs, plus logs |
+| History, statistics, traces and logs | Yes | No | Yes |
+| Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs |
 | Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
 | Safeguards | Admin only, store changes opt-in, Home Assistant validates every change, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 74 | Depends on Assist | 87 |
+| Tools | 80 | Depends on Assist | 87 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,

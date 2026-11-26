@@ -25,7 +25,7 @@ from . import http as views
 from . import operations as operations_mod
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "2.1.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "2.2.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -1151,6 +1151,169 @@ async def get_history(
             "minimal": minimal,
             "no_attributes": no_attributes,
         },
+    )
+
+
+@tool
+async def list_statistics(
+    c, search: str | None = None, statistic_type: str | None = None
+) -> Any:
+    """List the long-term statistics the recorder keeps: hourly aggregates
+    that stay after the detailed state history is purged.
+
+    `search` matches the statistic id (usually the entity id) or name;
+    `statistic_type` is 'mean' (measured values such as temperature) or
+    'sum' (totals such as energy). Each item has `statistic_id`,
+    `unit_of_measurement`, `has_mean` and `has_sum`.
+    """
+    return await c(
+        views.StatisticsListView,
+        "get",
+        query={"search": search, "type": statistic_type},
+    )
+
+
+@tool
+async def get_statistics(
+    c,
+    statistic_id: str,
+    period: str = "hour",
+    hours: float | None = None,
+    days: float | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    types: str | None = None,
+) -> Any:
+    """Fetch long-term statistics: how a value developed over days, months or
+    years, or how much energy was used per day.
+
+    Args:
+        statistic_id: One id, or several separated by commas (from
+            `list_statistics`), e.g. 'sensor.outdoor_temperature'.
+        period: Row size: '5minute', 'hour' (default), 'day', 'week',
+            'month' or 'year'. '5minute' only reaches back about 10 days.
+        hours, days, start, end: The window, as for `get_history`;
+            default the last 24 hours.
+        types: Comma-separated values to return (default all): 'mean',
+            'min', 'max' for measured values; 'sum', 'state', 'change' for
+            totals ('change' is the use within each row).
+
+    Returns {start, end, period, items: {statistic_id: [{start, end,
+    mean, min, max | sum, state, change}, ...]}}. At most 5000 rows; use a
+    coarser period for a longer window.
+    """
+    return await c(
+        views.StatisticsDataView,
+        "get",
+        query={
+            "statistic_id": statistic_id,
+            "period": period,
+            "hours": hours,
+            "days": days,
+            "start": start,
+            "end": end,
+            "types": types,
+        },
+    )
+
+
+@tool
+async def list_traces(c, domain: str = "automation", item_id: str | None = None) -> Any:
+    """List the stored runs of automations or scripts, newest first, to see
+    whether and how one ran. Home Assistant keeps the last few runs of each.
+
+    Args:
+        domain: 'automation' (default) or 'script'.
+        item_id: One automation or script: its id or its entity id. Without
+            it, the runs of every automation or script.
+
+    Each run has `run_id`, `item_id`, `timestamp` (start, finish), `trigger`,
+    `state`, `script_execution` (e.g. 'finished', 'failed_conditions',
+    'error', 'aborted'), `last_step` and, when it failed, `error`. Pass
+    `item_id` and `run_id` to `get_trace` for the steps.
+    """
+    return await c(
+        views.TraceListView, "get", query={"item_id": item_id}, domain=domain
+    )
+
+
+@tool
+async def get_trace(c, item_id: str, run_id: str, domain: str = "automation") -> Any:
+    """Return one run of an automation or script step by step, to find out
+    why it did or did not do something.
+
+    `trace` maps each step ('trigger/0', 'condition/0', 'action/0', ...) to
+    what happened there: its `result` (a condition's outcome, the service
+    called), `changed_variables` (the trigger data on the first step) and
+    `error`. `config` is the config the run used. Take `item_id` and
+    `run_id` from `list_traces`.
+    """
+    return await c(
+        views.TraceItemView, "get", domain=domain, item_id=item_id, run_id=run_id
+    )
+
+
+@tool
+async def get_logbook(
+    c,
+    entity_id: str | None = None,
+    hours: float | None = None,
+    days: float | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 200,
+) -> Any:
+    """Fetch the logbook: what changed and what caused it, in the order it
+    happened. Use it to see what an automation did, or who or what switched
+    a device.
+
+    Args:
+        entity_id: One entity id or several separated by commas; without
+            it, everything.
+        hours, days, start, end: The window, as for `get_history`;
+            default the last 24 hours.
+        limit: The most entries to return (default 200); the latest are
+            kept, `total` tells how many there were.
+
+    Each entry has `when`, `entity_id`, `state` or `message`, and where
+    known what caused it (`context_entity_id`, `context_service`,
+    `context_user_id`, ...).
+    """
+    return await c(
+        views.LogbookView,
+        "get",
+        query={
+            "entity_id": entity_id,
+            "hours": hours,
+            "days": days,
+            "start": start,
+            "end": end,
+            "limit": limit,
+        },
+    )
+
+
+@tool
+async def get_system_log(
+    c, level: str | None = None, search: str | None = None, limit: int = 50
+) -> Any:
+    """Fetch the errors and warnings Home Assistant logged since it started
+    (Settings → System → Logs), newest first, to diagnose a failing
+    integration or automation.
+
+    Args:
+        level: Only this level: 'ERROR', 'WARNING' or 'CRITICAL'.
+        search: Only entries whose logger, message or traceback holds this.
+        limit: The most entries to return (default 50).
+
+    Each entry has `level`, `logger`, `message`, `exception` (the
+    traceback), `source`, `count` (how often it repeated), `first_occurred`
+    and `last_occurred`.
+    """
+    return await c(
+        views.SystemLogView,
+        "get",
+        query={"level": level, "search": search, "limit": limit},
     )
 
 

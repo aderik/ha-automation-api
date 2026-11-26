@@ -1065,6 +1065,167 @@ class HistoryView(_AuthedView):
         )
 
 
+def _list_query(request, name: str) -> list[str]:
+    """A comma-separated query parameter as a list."""
+    return [part.strip() for part in (request.query.get(name) or "").split(",") if part.strip()]
+
+
+def _window(request):
+    return history_mod.parse_time_window(
+        start=request.query.get("start"),
+        end=request.query.get("end"),
+        hours=request.query.get("hours"),
+        days=request.query.get("days"),
+    )
+
+
+def _limit(request, default: int) -> int:
+    try:
+        limit = int(request.query.get("limit", default))
+    except ValueError:
+        raise ValueError("limit must be an integer") from None
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    return limit
+
+
+class StatisticsListView(_AuthedView):
+    url = "/api/automation_api/statistics"
+    name = "api:automation_api:statistics:list"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        try:
+            items = await history_mod.list_statistics(
+                hass,
+                _bearer(request),
+                search=request.query.get("search"),
+                kind=request.query.get("type"),
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"items": items})
+
+
+class StatisticsDataView(_AuthedView):
+    url = "/api/automation_api/statistics/data"
+    name = "api:automation_api:statistics:data"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        statistic_ids = _list_query(request, "statistic_id")
+        if not statistic_ids:
+            return self.json({"error": "missing statistic_id"}, status_code=400)
+        period = request.query.get("period", "hour")
+        try:
+            start_time, end_time = _window(request)
+            items = await history_mod.fetch_statistics(
+                hass,
+                _bearer(request),
+                statistic_ids=statistic_ids,
+                start_time=start_time,
+                end_time=end_time,
+                period=period,
+                types=_list_query(request, "types") or None,
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json(
+            {
+                "start": start_time.isoformat(),
+                "end": end_time.isoformat(),
+                "period": period,
+                "items": items,
+            }
+        )
+
+
+class TraceListView(_AuthedView):
+    url = "/api/automation_api/traces/{domain}"
+    name = "api:automation_api:traces:list"
+
+    async def get(self, request, domain):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        try:
+            items = await history_mod.list_traces(
+                hass, _bearer(request), domain, request.query.get("item_id")
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"items": items})
+
+
+class TraceItemView(_AuthedView):
+    url = "/api/automation_api/traces/{domain}/{item_id}/{run_id}"
+    name = "api:automation_api:traces:item"
+
+    async def get(self, request, domain, item_id, run_id):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        try:
+            trace = await history_mod.get_trace(
+                hass, _bearer(request), domain, item_id, run_id
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        if trace is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json(trace)
+
+
+class LogbookView(_AuthedView):
+    url = "/api/automation_api/logbook"
+    name = "api:automation_api:logbook"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        try:
+            limit = _limit(request, 200)
+            start_time, end_time = _window(request)
+            events = await history_mod.fetch_logbook(
+                hass,
+                _bearer(request),
+                start_time=start_time,
+                end_time=end_time,
+                entity_ids=_list_query(request, "entity_id") or None,
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json(
+            {
+                "start": start_time.isoformat(),
+                "end": end_time.isoformat(),
+                "total": len(events),
+                # the latest ones, when there are more than fit
+                "items": events[-limit:],
+            }
+        )
+
+
+class SystemLogView(_AuthedView):
+    url = "/api/automation_api/system_log"
+    name = "api:automation_api:system_log"
+
+    async def get(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        try:
+            limit = _limit(request, 50)
+            entries = await history_mod.fetch_system_log(
+                hass,
+                _bearer(request),
+                level=request.query.get("level"),
+                search=request.query.get("search"),
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"total": len(entries), "items": entries[:limit]})
+
+
 class ConfigEntryActionView(_AuthedView):
     url = "/api/automation_api/config_entries/{entry_id}/{action}"
     name = "api:automation_api:config_entries:action"
@@ -1553,3 +1714,9 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(StatisticsMetadataView)
     hass.http.register_view(EnergyPrefsView)
     hass.http.register_view(HistoryView)
+    hass.http.register_view(StatisticsListView)
+    hass.http.register_view(StatisticsDataView)
+    hass.http.register_view(TraceListView)
+    hass.http.register_view(TraceItemView)
+    hass.http.register_view(LogbookView)
+    hass.http.register_view(SystemLogView)

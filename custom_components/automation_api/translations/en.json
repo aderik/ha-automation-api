@@ -1,0 +1,14 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Automation API",
+        "description": "Adds a REST API and an MCP server for configuring Home Assistant: automations, scripts, helpers, dashboards and more. There is nothing to configure. Clients sign in with a long-lived access token of an administrator.\n\nDo you want to set it up?"
+      }
+    },
+    "abort": {
+      "already_configured": "Automation API is already set up.",
+      "single_instance_allowed": "Automation API is already set up."
+    }
+  }
+}

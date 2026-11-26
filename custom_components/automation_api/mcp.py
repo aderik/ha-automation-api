@@ -26,7 +26,7 @@ from . import operations as operations_mod
 from . import stats as stats_mod
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "2.5.0"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "2.5.1"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 

@@ -1,0 +1,14 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Automation API",
+        "description": "Voegt een REST-API en een MCP-server toe om Home Assistant te configureren: automatiseringen, scripts, helpers, dashboards en meer. Er valt niets in te stellen. Clients melden zich aan met een langlevend toegangstoken van een beheerder.\n\nWil je het instellen?"
+      }
+    },
+    "abort": {
+      "already_configured": "Automation API is al ingesteld.",
+      "single_instance_allowed": "Automation API is al ingesteld."
+    }
+  }
+}

@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/aderik/ha-automation-api/releases"><img src="https://img.shields.io/github/v/release/aderik/ha-automation-api" alt="Release" /></a>
-  <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5.svg" alt="HACS custom repository" /></a>
+  <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Default-41BDF5.svg" alt="HACS default repository" /></a>
   <a href="https://github.com/aderik/ha-automation-api/actions/workflows/validate.yml"><img src="https://github.com/aderik/ha-automation-api/actions/workflows/validate.yml/badge.svg" alt="Validate" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/aderik/ha-automation-api" alt="License" /></a>
 </p>
@@ -54,8 +54,9 @@ process to run.
 
 ## Installation
 
-1. In the Marketplace (Home Assistant 2026.11 and later) or HACS, add this
-   repository as a custom repository of type *Integration*.
+1. In the Marketplace (Home Assistant 2026.11 and later) or HACS, search for
+   **Automation API**. It is in the default catalog, so there is no custom
+   repository to add.
 2. Install it and restart Home Assistant.
 3. Go to *Settings → Devices & services → Add integration* and choose
    **Automation API**. There is nothing to configure.

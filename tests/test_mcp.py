@@ -822,30 +822,55 @@ def main():
         assert is_error and message in text, (tool_name, text)
     assert call("delete_dashboard_resource", resource_id="r1")[0] is False and resources == []
 
-    # config entry host: only the address is exposed, and only it is changed
+    # config entries: of the data of another integration only the address is
+    # shown, and nothing in it is ever changed; a change goes through the
+    # integration's own reconfigure flow
+    import homeassistant.config_entries as ha_config_entries
+
+    ha_config_entries.SOURCE_RECONFIGURE = "reconfigure"
     entry_obj = SimpleNamespace(
         entry_id="e1", domain="twinkly", title="T", source="user",
-        state="setup_retry", disabled_by=None,
+        state="setup_retry", disabled_by=None, supports_reconfigure=True,
         data={"host": "10.0.0.1", "token": "secret"},
     )
     fake_ce = MagicMock()
-    fake_ce.async_get_entry.return_value = entry_obj
-    fake_ce.async_reload = AsyncMock()
-    def update_entry(entry, data):
-        entry.data = data
-    fake_ce.async_update_entry.side_effect = update_entry
+    fake_ce.async_get_entry.side_effect = lambda entry_id: entry_obj if entry_id == "e1" else None
+    fake_ce.flow.async_init = AsyncMock(
+        return_value={"type": "form", "flow_id": "f9", "step_id": "reconfigure", "data_schema": None}
+    )
     ha = SimpleNamespace(config_entries=fake_ce)
-    item = asyncio.run(registry.set_config_entry_host(ha, "e1", "10.0.0.2"))
-    assert item["host"] == "10.0.0.2" and "secret" not in json.dumps(item), item
-    assert entry_obj.data == {"host": "10.0.0.2", "token": "secret"}
-    fake_ce.async_reload.assert_awaited_with("e1")
-    entry_obj.data = {"token": "x"}
+    item = asyncio.run(registry.get_config_entry(ha, "e1"))
+    assert item["host"] == "10.0.0.1" and item["supports_reconfigure"] is True, item
+    assert "secret" not in json.dumps(item), item
+    assert not hasattr(registry, "set_config_entry_host")
+    step = asyncio.run(registry.start_reconfigure_flow(ha, "e1"))
+    assert step == {"type": "form", "flow_id": "f9", "step_id": "reconfigure", "data_schema": []}, step
+    fake_ce.flow.async_init.assert_awaited_with(
+        "twinkly",
+        context={"source": "reconfigure", "entry_id": "e1", "show_advanced_options": True},
+    )
+    fake_ce.async_update_entry.assert_not_called()
+    assert asyncio.run(registry.start_reconfigure_flow(ha, "nope")) is None
+    entry_obj.supports_reconfigure = False
     try:
-        asyncio.run(registry.set_config_entry_host(ha, "e1", "10.0.0.3"))
-    except ValueError:
-        pass
+        asyncio.run(registry.start_reconfigure_flow(ha, "e1"))
+    except ValueError as e:
+        assert "has no reconfigure step" in str(e), e
     else:
-        raise AssertionError("entry without host was changed")
+        raise AssertionError("started a reconfigure flow the integration does not have")
+    assert fake_ce.flow.async_init.await_count == 1
+    # through the tool: the step, a refusal, an unknown entry
+    kept_entries = HASS.config_entries
+    HASS.config_entries = fake_ce
+    is_error, text = call("reconfigure_config_entry", entry_id="e1")
+    assert is_error and "HTTP 400" in text and "no reconfigure step" in text, text
+    entry_obj.supports_reconfigure = True
+    is_error, text = call("reconfigure_config_entry", entry_id="e1")
+    assert not is_error and json.loads(text)["flow_id"] == "f9", text
+    is_error, text = call("reconfigure_config_entry", entry_id="nope")
+    assert is_error and "HTTP 404" in text, text
+    HASS.config_entries = kept_entries
+    assert "set_config_entry_host" not in tools and "reconfigure_config_entry" in tools
 
     # matter commission: the pairing code goes to Matter's own websocket
     # command, as the caller; the answer names the devices that joined

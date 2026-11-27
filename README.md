@@ -325,16 +325,20 @@ or HACS gets its resource from the store; leave those to it.
 | `GET` | `/api/automation_api/device_registry?area_id=&manufacturer=&model=&integration=&config_entry_id=&disabled=` | List devices |
 | `GET` `PATCH` `DELETE` | `/api/automation_api/device_registry/{device_id}` | Read, update (`name_by_user`, `area_id`, `disabled_by`) or remove with its entities |
 | `GET` | `/api/automation_api/config_entries?domain=` | List integrations, with `reason` when setup failed or is retrying |
-| `GET` `PATCH` `DELETE` | `/api/automation_api/config_entries/{entry_id}` | Read, change the device address (`{"host": "192.168.1.20"}`, reloads the entry), or remove with all its devices and entities |
+| `GET` `DELETE` | `/api/automation_api/config_entries/{entry_id}` | Read, or remove with all its devices and entities |
+| `POST` | `/api/automation_api/config_entries/{entry_id}/reconfigure` | Start the integration's own reconfigure flow |
 | `POST` | `/api/automation_api/config_entries/{entry_id}/reload` | Reload an integration |
 | `POST` | `/api/automation_api/config_entries/{entry_id}/disable` | Disable an integration |
 | `POST` | `/api/automation_api/config_entries/{entry_id}/enable` | Enable an integration |
 
-Config entries of local integrations show their device address as `host`.
-When a device gets a new DHCP address, `PATCH` the entry with the new one
-instead of removing and re-adding the integration; that keeps its devices,
-entities, areas and history. It works for every integration that stores
-`host` or `ip_address`, including those without a reconfigure flow.
+Config entries of local integrations show their device address as `host`,
+and `supports_reconfigure` tells whether the integration can change its own
+settings. When a device gets a new DHCP address, start the reconfigure flow:
+the answer is the first step of that flow, which you answer through the
+[config flow endpoints](#adding-integrations-config-flows). That keeps the
+entry with its devices, entities, areas and history. The data of an entry
+belongs to its integration and is never changed from here; for an
+integration without a reconfigure step, remove the entry and add it again.
 
 Removing a registry entity while its integration is still active lets the
 integration re-add it on the next reload; remove the device or the config
@@ -665,6 +669,11 @@ CI) next to MCP.
 ## Upgrading
 
 ### To 2.5
+
+`PATCH /config_entries/{entry_id}` and the `set_config_entry_host` tool are
+gone (2.5.2): the data of an entry is its integration's to change. Use
+`POST /config_entries/{entry_id}/reconfigure` (`reconfigure_config_entry`),
+which starts the integration's own reconfigure flow.
 
 Installing and removing repositories from the store is gone: the
 `/hacs/download` and `/hacs/remove` endpoints, the `hacs_download` and

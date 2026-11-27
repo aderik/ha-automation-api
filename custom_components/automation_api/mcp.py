@@ -26,7 +26,7 @@ from . import operations as operations_mod
 from . import stats as stats_mod
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "2.5.1"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "2.5.2"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -878,16 +878,19 @@ async def get_config_entry(c, entry_id: str) -> Any:
 
 
 @tool
-async def set_config_entry_host(c, entry_id: str, host: str) -> Any:
-    """Point a local integration at a new IP address or hostname and reload
-    it, e.g. after the router handed the device a new DHCP address. Keeps
-    the entry, its devices, entities and history. Works for any integration
-    that stores `host` or `ip_address`, also those without a reconfigure
-    flow. Prefer the integration's own flow when it updates the address
-    (WiZ: `start_config_flow` with the new host). Check the device really is
-    at `host` first; the returned `state` shows whether setup succeeded."""
+async def reconfigure_config_entry(c, entry_id: str) -> Any:
+    """Start the reconfigure flow of an integration: its own way to change
+    the address, credentials or other settings of an entry, e.g. after the
+    router handed the device a new IP address. It keeps the entry with its
+    devices, entities and history.
+
+    Returns the first step of the flow, like `start_config_flow`; answer it
+    with `continue_config_flow`, or stop with `abort_config_flow`. Only
+    entries with `supports_reconfigure` (see `list_config_entries`) have
+    one. For the others, remove the entry and add the integration again;
+    entities usually come back under the same ids."""
     return await c(
-        views.ConfigEntryItemView, "patch", entry_id=entry_id, body={"host": host}
+        views.ConfigEntryActionView, "post", entry_id=entry_id, action="reconfigure"
     )
 
 

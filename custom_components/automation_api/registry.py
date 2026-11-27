@@ -260,6 +260,7 @@ def _config_entry_to_dict(entry) -> dict[str, Any]:
         ),
         "disabled_by": _enum_str(entry.disabled_by),
         "supports_unload": getattr(entry, "supports_unload", False),
+        "supports_reconfigure": getattr(entry, "supports_reconfigure", False),
         "supports_remove_device": getattr(entry, "supports_remove_device", False),
         "pref_disable_new_entities": getattr(entry, "pref_disable_new_entities", False),
         "pref_disable_polling": getattr(entry, "pref_disable_polling", False),
@@ -278,22 +279,30 @@ async def get_config_entry(hass: HomeAssistant, entry_id: str) -> dict | None:
     return _config_entry_to_dict(entry) if entry else None
 
 
-async def set_config_entry_host(
-    hass: HomeAssistant, entry_id: str, host: str
-) -> dict | None:
-    """Point an entry at a new address (e.g. after a DHCP change) and reload
-    it, for integrations without a reconfigure flow. Keeps the entry, its
-    devices, entities and history."""
+async def start_reconfigure_flow(hass: HomeAssistant, entry_id: str) -> dict | None:
+    """Start the reconfigure flow of an entry: the integration's own way to
+    change its address or credentials, which keeps the entry with its
+    devices, entities and history. Returns the first step, to be answered
+    like any other flow; None if there is no such entry."""
+    from homeassistant.config_entries import SOURCE_RECONFIGURE
+
     entry = hass.config_entries.async_get_entry(entry_id)
     if entry is None:
         return None
-    if (host_key := _host_key(entry)) is None:
-        raise ValueError(f"{entry.domain} entries store no host or IP address")
-    hass.config_entries.async_update_entry(
-        entry, data={**entry.data, host_key: host}
+    if not entry.supports_reconfigure:
+        raise ValueError(
+            f"the {entry.domain} integration has no reconfigure step; to "
+            "change this entry, remove it and add it again"
+        )
+    result = await hass.config_entries.flow.async_init(
+        entry.domain,
+        context={
+            "source": SOURCE_RECONFIGURE,
+            "entry_id": entry_id,
+            "show_advanced_options": True,
+        },
     )
-    await hass.config_entries.async_reload(entry_id)
-    return _config_entry_to_dict(entry)
+    return _flow_result_to_dict(result)
 
 
 async def disable_config_entry(

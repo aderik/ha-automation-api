@@ -25,6 +25,9 @@ from . import registry as registry_mod
 from . import history as history_mod
 from . import stats as stats_mod
 from . import hacs as hacs_mod
+from . import labels as labels_mod
+from . import todo as todo_mod
+from . import calendars as calendars_mod
 
 
 CREATE_SCHEMA = vol.Schema(
@@ -955,6 +958,7 @@ class EntityRegistryListView(_AuthedView):
             area_id=request.query.get("area_id"),
             config_entry_id=request.query.get("config_entry_id"),
             disabled=_bool_query(request, "disabled"),
+            label=request.query.get("label"),
         )
         return self.json({"items": items})
 
@@ -982,6 +986,8 @@ class EntityRegistryItemView(_AuthedView):
         await log(hass, f"HTTP update entity_registry {entity_id}")
         try:
             updated = await registry_mod.update_entity(hass, entity_id, data)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
         except Exception as e:
             return self.json({"error": f"update failed: {e}"}, status_code=500)
         if updated is None:
@@ -1013,6 +1019,7 @@ class DeviceRegistryListView(_AuthedView):
             integration=request.query.get("integration"),
             config_entry_id=request.query.get("config_entry_id"),
             disabled=_bool_query(request, "disabled"),
+            label=request.query.get("label"),
         )
         return self.json({"items": items})
 
@@ -1040,6 +1047,8 @@ class DeviceRegistryItemView(_AuthedView):
         await log(hass, f"HTTP update device_registry {device_id}")
         try:
             updated = await registry_mod.update_device(hass, device_id, data)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
         except Exception as e:
             return self.json({"error": f"update failed: {e}"}, status_code=500)
         if updated is None:
@@ -1705,6 +1714,188 @@ class EnergyPrefsView(_AuthedView):
         return self.json(result)
 
 
+class LabelsView(_AuthedView):
+    url = "/api/automation_api/labels"
+    name = "api:automation_api:labels"
+
+    async def get(self, request):
+        _require_admin(request)
+        return self.json({"items": labels_mod.list_labels(request.app["hass"])})
+
+    async def post(self, request):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        await log(hass, "HTTP create label")
+        try:
+            return self.json({"status": "ok", "label": labels_mod.create_label(hass, data)})
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+
+
+class LabelItemView(_AuthedView):
+    url = "/api/automation_api/labels/{label_id}"
+    name = "api:automation_api:label"
+
+    async def put(self, request, label_id):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        data, err = await self._json_body(request)
+        if err:
+            return err
+        await log(hass, f"HTTP update label {label_id}")
+        try:
+            label = labels_mod.update_label(hass, label_id, data)
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        if label is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"status": "ok", "label": label})
+
+    async def delete(self, request, label_id):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        await log(hass, f"HTTP delete label {label_id}")
+        if not labels_mod.delete_label(hass, label_id):
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"status": "ok", "label_id": label_id})
+
+
+class _ListEntityView(_AuthedView):
+    """Base of the to-do and calendar views: run the change and turn what
+    the list or calendar refuses into a 400, a missing one into a 404."""
+
+    async def _change(self, request, what: str, change, body: bool = True):
+        hass: HomeAssistant = request.app["hass"]
+        _require_admin(request)
+        data = None
+        if body:
+            data, err = await self._json_body(request)
+            if err:
+                return err
+        await log(hass, f"HTTP {what}")
+        try:
+            await change(hass, data)
+        except LookupError:
+            return self.json({"error": "not found"}, status_code=404)
+        except ValueError as e:
+            if str(e).endswith("(not_found)"):
+                return self.json({"error": "not found"}, status_code=404)
+            return self.json({"error": str(e)}, status_code=400)
+        return self.json({"status": "ok"})
+
+
+class TodoItemsView(_ListEntityView):
+    url = "/api/automation_api/todo/{entity_id}/items"
+    name = "api:automation_api:todo:items"
+
+    async def get(self, request, entity_id):
+        _require_admin(request)
+        try:
+            items = await todo_mod.list_items(
+                request.app["hass"], _bearer(request), entity_id, request.query.get("status")
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        if items is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"entity_id": entity_id, "items": items})
+
+    async def post(self, request, entity_id):
+        user_id = request["hass_user"].id
+        return await self._change(
+            request,
+            f"add to-do item {entity_id}",
+            lambda hass, data: todo_mod.add_item(hass, user_id, entity_id, data),
+        )
+
+
+class TodoItemView(_ListEntityView):
+    url = "/api/automation_api/todo/{entity_id}/items/{item}"
+    name = "api:automation_api:todo:item"
+
+    async def put(self, request, entity_id, item):
+        user_id = request["hass_user"].id
+        return await self._change(
+            request,
+            f"update to-do item {entity_id}",
+            lambda hass, data: todo_mod.update_item(hass, user_id, entity_id, item, data),
+        )
+
+    async def delete(self, request, entity_id, item):
+        user_id = request["hass_user"].id
+        return await self._change(
+            request,
+            f"remove to-do item {entity_id}",
+            lambda hass, data: todo_mod.remove_item(hass, user_id, entity_id, item),
+            body=False,
+        )
+
+
+def _occurrence(request) -> dict:
+    return {
+        key: request.query.get(key) for key in ("recurrence_id", "recurrence_range")
+    }
+
+
+class CalendarEventsView(_ListEntityView):
+    url = "/api/automation_api/calendars/{entity_id}/events"
+    name = "api:automation_api:calendar:events"
+
+    async def get(self, request, entity_id):
+        _require_admin(request)
+        try:
+            found = await calendars_mod.list_events(
+                request.app["hass"],
+                _bearer(request),
+                entity_id,
+                start=request.query.get("start"),
+                end=request.query.get("end"),
+                days=request.query.get("days"),
+            )
+        except ValueError as e:
+            return self.json({"error": str(e)}, status_code=400)
+        if found is None:
+            return self.json({"error": "not found"}, status_code=404)
+        return self.json({"entity_id": entity_id, **found})
+
+    async def post(self, request, entity_id):
+        token = _bearer(request)
+        return await self._change(
+            request,
+            f"create calendar event {entity_id}",
+            lambda hass, data: calendars_mod.create_event(hass, token, entity_id, data),
+        )
+
+
+class CalendarEventItemView(_ListEntityView):
+    url = "/api/automation_api/calendars/{entity_id}/events/{uid}"
+    name = "api:automation_api:calendar:event"
+
+    async def put(self, request, entity_id, uid):
+        token = _bearer(request)
+        return await self._change(
+            request,
+            f"update calendar event {entity_id}",
+            lambda hass, data: calendars_mod.update_event(
+                hass, token, entity_id, uid, data, **_occurrence(request)
+            ),
+        )
+
+    async def delete(self, request, entity_id, uid):
+        token = _bearer(request)
+        return await self._change(
+            request,
+            f"delete calendar event {entity_id}",
+            lambda hass, data: calendars_mod.delete_event(
+                hass, token, entity_id, uid, **_occurrence(request)
+            ),
+            body=False,
+        )
+
+
 def async_register_http(hass: HomeAssistant):
     hass.http.register_view(AutomationApiView)
     hass.http.register_view(AutomationApiTriggerView)
@@ -1755,3 +1946,9 @@ def async_register_http(hass: HomeAssistant):
     hass.http.register_view(TraceItemView)
     hass.http.register_view(LogbookView)
     hass.http.register_view(SystemLogView)
+    hass.http.register_view(LabelsView)
+    hass.http.register_view(LabelItemView)
+    hass.http.register_view(TodoItemsView)
+    hass.http.register_view(TodoItemView)
+    hass.http.register_view(CalendarEventsView)
+    hass.http.register_view(CalendarEventItemView)

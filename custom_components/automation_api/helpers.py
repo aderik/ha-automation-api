@@ -1,15 +1,17 @@
-"""`input_*` helpers, through the commands of the Helpers page.
+"""Helpers and zones, through the commands of their settings pages.
 
-Each `input_*` integration keeps its helpers in its own storage collection
-and takes changes over its WebSocket commands (`input_boolean/create`,
-`input_boolean/update`, ...), which is what Settings → Helpers uses. This
-module sends those commands as the caller (see `ha_client`), so a helper
-made here is an ordinary UI helper: validated by its integration, live at
+The `input_*`, counter, timer and schedule integrations each keep their helpers in a
+storage collection and take changes over their WebSocket commands
+(`input_boolean/create`, `input_boolean/update`, ...), which is what
+Settings → Helpers uses. Zones work the same way (`zone/create`, ...). This
+module sends those commands as the caller (see `ha_client`), so what is
+made here is an ordinary UI item: validated by its integration, live at
 once and editable in the UI.
 
-Home Assistant derives the id of a new helper, and with it the entity id,
-from its name. Helpers defined in YAML are not part of the collection and
-are not listed.
+Home Assistant derives the id of a new item, and with it the entity id,
+from its name. Items defined in YAML are not part of the collection and are
+not listed; neither is the Home zone, which is the location of Home
+Assistant itself.
 """
 
 from __future__ import annotations
@@ -22,17 +24,22 @@ from homeassistant.helpers import entity_registry as er
 from .ha_client import connect as _connect
 
 HELPER_DOMAINS: set[str] = {
+    "counter",
     "input_boolean",
     "input_button",
     "input_datetime",
     "input_number",
     "input_select",
     "input_text",
+    "schedule",
+    "timer",
 }
+
+ZONE = "zone"
 
 
 def _check(domain: str, config: Any) -> None:
-    if domain not in HELPER_DOMAINS:
+    if domain != ZONE and domain not in HELPER_DOMAINS:
         raise ValueError(f"unsupported helper domain: {domain}")
     if not isinstance(config, dict):
         raise ValueError("config must be a dict")

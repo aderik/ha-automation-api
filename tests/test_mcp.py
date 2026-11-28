@@ -98,7 +98,7 @@ def main():
 
     # tools/list: all tools, schemas derived from the signatures
     tools = {t["name"]: t for t in rpc("tools/list")["result"]["tools"]}
-    assert len(tools) == 86, len(tools)
+    assert len(tools) == 100, len(tools)
     schema = tools["create_dashboard"]["inputSchema"]
     assert schema["required"] == ["url_path", "title"]
     assert schema["properties"]["show_in_sidebar"] == {"type": "boolean"}
@@ -458,12 +458,14 @@ def main():
     assert not entries
 
     # query args: None dropped, booleans survive the string round-trip
+    real_list_entities = mcp.views.registry_mod.list_entities
     mcp.views.registry_mod.list_entities = AsyncMock(return_value=[])
     assert call("list_registry_entities", platform="tuya", disabled=False)[0] is False
     kwargs = mcp.views.registry_mod.list_entities.await_args.kwargs
     assert kwargs["platform"] == "tuya"
     assert kwargs["disabled"] is False
     assert kwargs["domain"] is None
+    mcp.views.registry_mod.list_entities = real_list_entities
 
     # config flows: body reaches the view, missing domain is rejected
     mcp.views.registry_mod.start_config_flow = AsyncMock(
@@ -1565,6 +1567,288 @@ def main():
     kept = json.loads(call("call_service", domain="a", service="turn_on")[1])["operation_id"]
     assert status(first["operation_id"])[0]["status"] == "unknown"
     assert status(kept)[0]["status"] == "completed" and len(HASS.data["automation_api"]["operations"]) == 2
+
+    # labels live in Home Assistant's own label registry
+    from custom_components.automation_api import labels
+
+    class FakeLabels:
+        def __init__(self):
+            self.labels = {}
+
+        def async_list_labels(self):
+            return list(self.labels.values())
+
+        def async_get_label(self, label_id):
+            return self.labels.get(label_id)
+
+        def async_create(self, name, **fields):
+            label_id = name.lower().replace(" ", "_")
+            if label_id in self.labels:
+                raise ValueError(f"The name {name} ({label_id}) is already in use")
+            label = SimpleNamespace(
+                label_id=label_id, name=name,
+                **{"color": None, "icon": None, "description": None, **fields},
+            )
+            self.labels[label_id] = label
+            return label
+
+        def async_update(self, label_id, **fields):
+            vars(self.labels[label_id]).update(fields)
+            return self.labels[label_id]
+
+        def async_delete(self, label_id):
+            del self.labels[label_id]
+
+    label_registry = FakeLabels()
+    labels.lr = SimpleNamespace(async_get=lambda hass: label_registry)
+    is_error, text = call("upsert_label", config={"name": " Low Battery ", "color": "red"})
+    low = {"label_id": "low_battery", "name": "Low Battery", "color": "red", "icon": None, "description": None}
+    assert not is_error and json.loads(text) == {"status": "ok", "label": low}, text
+    for bad, why in (
+        ({"color": "red"}, "needs a 'name'"),
+        ({"name": "x", "colour": "red"}, "not ['colour']"),
+        ({"name": "Low Battery"}, "already in use"),
+    ):
+        is_error, text = call("upsert_label", config=bad)
+        assert is_error and "HTTP 400" in text and why in text, text
+    # with an id only the given fields change
+    is_error, text = call("upsert_label", label_id="low_battery", config={"icon": "mdi:battery"})
+    assert not is_error and json.loads(text)["label"] == {**low, "icon": "mdi:battery"}, text
+    assert "HTTP 404" in call("upsert_label", label_id="nope", config={"icon": "mdi:tag"})[1]
+    assert json.loads(call("list_labels")[1])["items"] == [{**low, "icon": "mdi:battery"}]
+
+    # which entities and devices carry a label is kept on the entity and device
+    from custom_components.automation_api import registry
+
+    class entry(SimpleNamespace):
+        def __getattr__(self, name):  # whatever the test did not set
+            return None
+
+    lamp = entry(entity_id="light.lamp", labels={"low_battery"})
+    entity_updates = []
+
+    def update_entity(entity_id, **changes):
+        entity_updates.append((entity_id, changes))
+        lamp.labels = changes.get("labels", lamp.labels)
+        return lamp
+
+    kept_registries = registry._entity_registry, registry._device_registry
+    registry._label_registry = lambda hass: label_registry
+    registry._entity_registry = lambda hass: SimpleNamespace(
+        entities={"light.lamp": lamp, "light.other": entry(entity_id="light.other", labels=set())},
+        async_get=lambda entity_id: lamp if entity_id == "light.lamp" else None,
+        async_update_entity=update_entity,
+    )
+    found = json.loads(call("list_registry_entities", label="low_battery")[1])["items"]
+    assert [e["entity_id"] for e in found] == ["light.lamp"] and found[0]["labels"] == ["low_battery"], found
+    is_error, text = call("update_registry_entity", entity_id="light.lamp", changes={"labels": []})
+    assert not is_error and json.loads(text)["labels"] == [], text
+    assert entity_updates == [("light.lamp", {"labels": set()})], entity_updates
+    # a label has to exist, and the list is a list
+    for bad, why in ((["nope"], "there is no label ['nope']"), ("low_battery", "must be a list")):
+        is_error, text = call("update_registry_entity", entity_id="light.lamp", changes={"labels": bad})
+        assert is_error and "HTTP 400" in text and why in text, text
+    assert len(entity_updates) == 1
+
+    hub = entry(id="d1", labels=set(), config_entries=set(), identifiers=set(), connections=set())
+    device_updates = []
+    registry._device_registry = lambda hass: SimpleNamespace(
+        devices={"d1": hub},
+        async_get=lambda device_id: hub if device_id == "d1" else None,
+        async_update_device=lambda device_id, **changes: device_updates.append(changes) or hub,
+    )
+    assert call("update_device", device_id="d1", changes={"labels": ["low_battery"]})[0] is False
+    assert device_updates == [{"labels": {"low_battery"}}], device_updates
+    assert json.loads(call("list_devices", label="low_battery")[1])["items"] == []
+    registry._entity_registry, registry._device_registry = kept_registries
+
+    assert call("delete_label", label_id="low_battery")[0] is False and not label_registry.labels
+    assert "HTTP 404" in call("delete_label", label_id="low_battery")[1]
+
+    # zones, counters and timers are storage collections like the input helpers
+    helper_sent.clear()
+    is_error, text = call("upsert_zone", config={"name": "Work", "latitude": 52.1, "longitude": 5.1})
+    assert not is_error and json.loads(text)["helper"]["entity_id"] == "zone.work", text
+    assert helper_sent[-1][1] == "zone/create"
+    is_error, text = call("upsert_zone", zone_id="work", config={"radius": 250})
+    assert not is_error, text
+    assert helper_sent[-1][1:] == ("zone/update", {"zone_id": "work", "radius": 250}), helper_sent[-1]
+    assert list(json.loads(call("list_zones")[1])["items"]) == ["work"]
+    assert call("delete_zone", zone_id="work")[0] is False and stored["zone"] == {}
+    assert "HTTP 404" in call("delete_zone", zone_id="work")[1]
+    for domain in ("counter", "timer", "schedule"):
+        assert call("upsert_helper", domain=domain, config={"name": "N"})[0] is False
+        assert helper_sent[-1][1] == f"{domain}/create"
+
+    # to-do lists: items are read over the websocket, as the caller, and
+    # changed with the services of the todo integration
+    from custom_components.automation_api import todo
+
+    todo_items = [
+        {"uid": "u1", "summary": "Milk", "status": "needs_action"},
+        {"uid": "u2", "summary": "Bread", "status": "completed"},
+    ]
+    todo_sent, todo_calls = [], []
+
+    @asynccontextmanager
+    async def fake_todo(hass, token, error):
+        async def command(type_, **fields):
+            todo_sent.append((token, type_, fields))
+            if fields["entity_id"] != "todo.shopping":
+                raise error("Entity not found (not_found)")
+            return {"items": todo_items}
+
+        yield command
+
+    async def todo_service(domain, service, data, blocking, context):
+        todo_calls.append((domain, service, data, blocking, context))
+        if data.get("item") == "ghost" or data.get("item") == ["ghost"]:
+            raise HomeAssistantError("Unable to find to-do list item: ghost")
+
+    todo._connect = fake_todo
+    todo.Context = lambda user_id: f"context of {user_id}"
+    todo.HomeAssistantError = HomeAssistantError
+    HASS.states.get = lambda entity_id: (
+        "a state" if entity_id in ("todo.shopping", "light.lamp", "calendar.family", "calendar.gone") else None
+    )
+    HASS.services.async_call = todo_service
+
+    found = json.loads(call("get_todo_items", entity_id="todo.shopping")[1])
+    assert found == {"entity_id": "todo.shopping", "items": todo_items}, found
+    assert todo_sent[-1] == ("t0ken", "todo/item/list", {"entity_id": "todo.shopping"})
+    open_items = json.loads(call("get_todo_items", entity_id="todo.shopping", status="needs_action")[1])
+    assert [i["uid"] for i in open_items["items"]] == ["u1"]
+    assert "HTTP 400" in call("get_todo_items", entity_id="todo.shopping", status="done")[1]
+    assert "HTTP 404" in call("get_todo_items", entity_id="todo.nope")[1]
+
+    assert call("add_todo_item", entity_id="todo.shopping", item="Eggs", due_date="2026-12-01") == (
+        False, json.dumps({"status": "ok"}),
+    )
+    assert todo_calls[-1] == (
+        "todo", "add_item",
+        {"entity_id": "todo.shopping", "item": "Eggs", "due_date": "2026-12-01"},
+        True, "context of user-1",
+    ), todo_calls[-1]
+    assert call("update_todo_item", entity_id="todo.shopping", item="u1", status="completed")[0] is False
+    assert todo_calls[-1][1:3] == (
+        "update_item", {"entity_id": "todo.shopping", "item": "u1", "status": "completed"},
+    ), todo_calls[-1]
+    assert call("remove_todo_item", entity_id="todo.shopping", item="u1")[0] is False
+    assert todo_calls[-1][1:3] == ("remove_item", {"entity_id": "todo.shopping", "item": ["u1"]})
+    made_calls = len(todo_calls)
+    for tool, arguments, why in (
+        ("add_todo_item", {"entity_id": "todo.shopping", "item": " "}, "HTTP 400"),
+        ("update_todo_item", {"entity_id": "todo.shopping", "item": "u1"}, "give something to change"),
+        ("update_todo_item", {"entity_id": "todo.shopping", "item": "u1", "status": "done"}, "status must be"),
+        ("add_todo_item", {"entity_id": "todo.nope", "item": "x"}, "HTTP 404"),
+        # a light is not a to-do list, whatever its state
+        ("remove_todo_item", {"entity_id": "light.lamp", "item": "x"}, "HTTP 404"),
+    ):
+        is_error, text = call(tool, **arguments)
+        assert is_error and why in text, (tool, text)
+    assert len(todo_calls) == made_calls
+    # what the list refuses is the caller's mistake
+    is_error, text = call("remove_todo_item", entity_id="todo.shopping", item="ghost")
+    assert is_error and "HTTP 400" in text and "Unable to find" in text, text
+
+    # calendars: events are read over REST and changed over the websocket,
+    # both as the caller
+    from datetime import datetime, timedelta, timezone
+
+    from custom_components.automation_api import calendars
+
+    calendar_requests, calendar_sent = [], []
+    party = {"summary": "Party", "start": "2026-12-01T10:00:00+01:00", "end": "2026-12-01T11:00:00+01:00"}
+
+    async def fake_calendar_request(hass, token, error, method, path, body=None):
+        calendar_requests.append((token, method, path))
+        if "calendar.family" not in path:
+            return 404, {"message": "Entity not found"}
+        return 200, [
+            {
+                "summary": "Party", "uid": "e1", "location": None,
+                "start": {"dateTime": party["start"]}, "end": {"dateTime": party["end"]},
+            },
+            {"summary": "Day off", "start": {"date": "2026-12-02"}, "end": {"date": "2026-12-03"}},
+        ]
+
+    @asynccontextmanager
+    async def fake_calendar(hass, token, error):
+        async def command(type_, **fields):
+            calendar_sent.append((token, type_, fields))
+            if fields["entity_id"] == "calendar.nope":
+                raise error("Entity not found (not_found)")
+            if fields["entity_id"] == "calendar.holidays":
+                raise error("Calendar does not support event creation (not_supported)")
+
+        yield command
+
+    now = datetime(2026, 11, 28, 12, 0, tzinfo=timezone.utc)
+    calendars._request = fake_calendar_request
+    calendars._connect = fake_calendar
+    calendars.parse_time = lambda value, name: datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+    calendars.dt_util = SimpleNamespace(utcnow=lambda: now, as_local=lambda value: value)
+
+    found = json.loads(call("get_calendar_events", entity_id="calendar.family")[1])
+    assert found == {
+        "entity_id": "calendar.family",
+        "start": now.isoformat(),
+        "end": (now + timedelta(days=7)).isoformat(),
+        # as an event is written: plain times, nothing that is not set
+        "events": [
+            {**party, "uid": "e1"},
+            {"summary": "Day off", "start": "2026-12-02", "end": "2026-12-03"},
+        ],
+    }, found
+    assert calendar_requests[-1] == (
+        "t0ken", "GET",
+        "/api/calendars/calendar.family?start=2026-11-28T12%3A00%3A00%2B00%3A00&end=2026-12-05T12%3A00%3A00%2B00%3A00",
+    ), calendar_requests[-1]
+    call("get_calendar_events", entity_id="calendar.family", start="2026-12-01", days=0.5)
+    assert calendar_requests[-1][2].endswith("start=2026-12-01T00%3A00%3A00%2B00%3A00&end=2026-12-01T12%3A00%3A00%2B00%3A00")
+    for arguments, why in (
+        ({"entity_id": "calendar.nope"}, "HTTP 404"),
+        ({"entity_id": "calendar.gone"}, "HTTP 404: "),
+        ({"entity_id": "light.lamp"}, "must be a calendar entity"),
+        ({"entity_id": "calendar.family", "start": "2026-12-02", "end": "2026-12-01"}, "'end' must be after"),
+    ):
+        is_error, text = call("get_calendar_events", **arguments)
+        assert is_error and why in text, text
+
+    # only a calendar that exists is asked for its events
+    assert [r[2].split("?")[0].rsplit("/", 1)[1] for r in calendar_requests] == [
+        "calendar.family", "calendar.family", "calendar.gone",
+    ], calendar_requests
+
+    assert call("create_calendar_event", entity_id="calendar.family", event=party)[0] is False
+    sent_party = {"summary": "Party", "dtstart": party["start"], "dtend": party["end"]}
+    assert calendar_sent[-1] == (
+        "t0ken", "calendar/event/create", {"entity_id": "calendar.family", "event": sent_party},
+    ), calendar_sent[-1]
+    assert call(
+        "update_calendar_event", entity_id="calendar.family", uid="e1",
+        event={**party, "summary": "Big party"}, recurrence_id="20261201T090000Z",
+    )[0] is False
+    assert calendar_sent[-1][1:] == (
+        "calendar/event/update",
+        {
+            "entity_id": "calendar.family", "uid": "e1",
+            "event": {**sent_party, "summary": "Big party"}, "recurrence_id": "20261201T090000Z",
+        },
+    ), calendar_sent[-1]
+    assert call("delete_calendar_event", entity_id="calendar.family", uid="e1")[0] is False
+    assert calendar_sent[-1][1:] == ("calendar/event/delete", {"entity_id": "calendar.family", "uid": "e1"})
+    sent = len(calendar_sent)
+    for bad, why in (
+        ({"summary": "No times"}, "an event needs ['start', 'end']"),
+        ({**party, "colour": "red"}, "not ['colour']"),
+    ):
+        is_error, text = call("create_calendar_event", entity_id="calendar.family", event=bad)
+        assert is_error and "HTTP 400" in text and why in text, text
+    assert len(calendar_sent) == sent
+    assert "HTTP 404" in call("create_calendar_event", entity_id="calendar.nope", event=party)[1]
+    is_error, text = call("create_calendar_event", entity_id="calendar.holidays", event=party)
+    assert is_error and "HTTP 400" in text and "does not support event creation" in text, text
 
     print("ok")
 

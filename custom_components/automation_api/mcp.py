@@ -26,7 +26,7 @@ from . import operations as operations_mod
 from . import stats as stats_mod
 from .const import LOG_FILE
 
-SERVER_INFO = {"name": "ha-automation-api", "version": "2.5.2"}
+SERVER_INFO = {"name": "ha-automation-api", "version": "2.6.0"}
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
@@ -318,7 +318,7 @@ async def delete_scene(c, scene_id: str) -> Any:
 async def upsert_helper(
     c, domain: str, config: dict[str, Any], helper_id: str | None = None
 ) -> Any:
-    """Create an input helper, or replace the config of an existing one.
+    """Create a helper, or replace the config of an existing one.
 
     Without `helper_id` a helper is created; Home Assistant derives its id
     and entity id from `name` ('Garden start' → input_datetime.garden_start).
@@ -328,12 +328,17 @@ async def upsert_helper(
 
     Args:
         domain: One of input_boolean / input_button / input_datetime /
-                input_number / input_select / input_text.
+                input_number / input_select / input_text / counter / timer /
+                schedule.
         config: Full config of the helper, `name` included. Examples:
             input_boolean → {"name": "...", "icon": "mdi:bell"}
             input_datetime → {"name": "...", "has_date": true, "has_time": false}
             input_number  → {"name": "...", "min": 0, "max": 100, "step": 1}
             input_select  → {"name": "...", "options": ["a", "b"]}
+            counter       → {"name": "...", "initial": 0, "step": 1}
+            timer         → {"name": "...", "duration": "00:05:00"}
+            schedule      → {"name": "...", "monday": [{"from": "08:00:00",
+                             "to": "17:00:00"}], ...}
     """
     if helper_id is None:
         return await c(views.HelpersListView, "post", body=config, domain=domain)
@@ -344,7 +349,7 @@ async def upsert_helper(
 
 @tool
 async def delete_helper(c, domain: str, helper_id: str) -> Any:
-    """Delete an input helper by its id (from `list_helpers`)."""
+    """Delete a helper by its id (from `list_helpers`)."""
     return await c(views.HelperItemView, "delete", domain=domain, helper_id=helper_id)
 
 
@@ -744,6 +749,253 @@ async def delete_dashboard_card(
 
 
 # ---------------------------------------------------------------------------
+# Labels, zones, to-do lists and calendars
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def list_labels(c) -> Any:
+    """List the labels (Settings → Areas, labels & zones), each with its
+    `label_id`, name, color, icon and description.
+
+    Which entities and devices carry a label: `list_registry_entities` and
+    `list_devices` with `label`. To put labels on one: `update_registry_entity`
+    or `update_device` with `labels`."""
+    return await c(views.LabelsView, "get")
+
+
+@tool
+async def upsert_label(c, config: dict[str, Any], label_id: str | None = None) -> Any:
+    """Create a label, or change one.
+
+    Without `label_id` a label is created from `config`; Home Assistant
+    derives its id from `name`. With `label_id` only the given fields change.
+
+    Args:
+        config: {"name": "...", "color": "red", "icon": "mdi:tag",
+                "description": "..."}; a new label needs `name`.
+    """
+    if label_id is None:
+        return await c(views.LabelsView, "post", body=config)
+    return await c(views.LabelItemView, "put", body=config, label_id=label_id)
+
+
+@tool
+async def delete_label(c, label_id: str) -> Any:
+    """Delete a label; it comes off every entity, device and area that had it."""
+    return await c(views.LabelItemView, "delete", label_id=label_id)
+
+
+@tool
+async def list_zones(c) -> Any:
+    """List the zones made in the UI, by id, each with its name, latitude,
+    longitude, radius (metres), `passive`, icon and `entity_id`.
+
+    The Home zone is the location of Home Assistant itself and is not listed;
+    neither are zones defined in YAML."""
+    return await c(views.HelpersListView, "get", domain="zone")
+
+
+@tool
+async def upsert_zone(c, config: dict[str, Any], zone_id: str | None = None) -> Any:
+    """Create a zone, or change one.
+
+    Without `zone_id` a zone is created; Home Assistant derives its id and
+    entity id from `name` ('Work' → zone.work). With `zone_id` (from
+    `list_zones`) only the given fields change.
+
+    Args:
+        config: {"name": "...", "latitude": 52.1, "longitude": 5.1,
+                "radius": 100, "passive": false, "icon": "mdi:briefcase"};
+                a new zone needs name, latitude and longitude.
+    """
+    if zone_id is None:
+        return await c(views.HelpersListView, "post", body=config, domain="zone")
+    return await c(
+        views.HelperItemView, "put", body=config, domain="zone", helper_id=zone_id
+    )
+
+
+@tool
+async def delete_zone(c, zone_id: str) -> Any:
+    """Delete a zone by its id (from `list_zones`)."""
+    return await c(views.HelperItemView, "delete", domain="zone", helper_id=zone_id)
+
+
+@tool
+async def get_todo_items(c, entity_id: str, status: str | None = None) -> Any:
+    """Read the items of a to-do list, each with its `uid`, `summary`,
+    `status` and, where set, `due` and `description`.
+
+    The to-do lists themselves are the entities of the `todo` domain:
+    `list_entities` with domain 'todo'.
+
+    Args:
+        entity_id: The list, e.g. 'todo.shopping_list'.
+        status: 'needs_action' or 'completed' to read only those.
+    """
+    return await c(
+        views.TodoItemsView, "get", query={"status": status}, entity_id=entity_id
+    )
+
+
+@tool
+async def add_todo_item(
+    c,
+    entity_id: str,
+    item: str,
+    due_date: str | None = None,
+    due_datetime: str | None = None,
+    description: str | None = None,
+) -> Any:
+    """Add an item to a to-do list.
+
+    Args:
+        item: The text of the item.
+        due_date: 'YYYY-MM-DD', or
+        due_datetime: 'YYYY-MM-DD HH:MM:SS'; not every list takes a due date.
+        description: A longer note; not every list takes one.
+    """
+    body = {
+        "item": item,
+        "due_date": due_date,
+        "due_datetime": due_datetime,
+        "description": description,
+    }
+    return await c(views.TodoItemsView, "post", body=body, entity_id=entity_id)
+
+
+@tool
+async def update_todo_item(
+    c,
+    entity_id: str,
+    item: str,
+    rename: str | None = None,
+    status: str | None = None,
+    due_date: str | None = None,
+    due_datetime: str | None = None,
+    description: str | None = None,
+) -> Any:
+    """Change an item of a to-do list: tick it off, rename it, or set its
+    due date or description.
+
+    Args:
+        item: The `uid` of the item (from `get_todo_items`) or its text.
+        rename: Its new text.
+        status: 'completed' to tick it off, 'needs_action' to open it again.
+    """
+    body = {
+        "rename": rename,
+        "status": status,
+        "due_date": due_date,
+        "due_datetime": due_datetime,
+        "description": description,
+    }
+    return await c(
+        views.TodoItemView, "put", body=body, entity_id=entity_id, item=item
+    )
+
+
+@tool
+async def remove_todo_item(c, entity_id: str, item: str) -> Any:
+    """Remove an item from a to-do list, named by its `uid` or its text."""
+    return await c(views.TodoItemView, "delete", entity_id=entity_id, item=item)
+
+
+@tool
+async def get_calendar_events(
+    c,
+    entity_id: str,
+    start: str | None = None,
+    end: str | None = None,
+    days: float | None = None,
+) -> Any:
+    """Read the events of a calendar in a time window, by default the coming
+    7 days. Each event has `summary`, `start`, `end` and, where the calendar
+    keeps them, `uid`, `description`, `location`, `rrule` and `recurrence_id`.
+
+    The calendars themselves are the entities of the `calendar` domain:
+    `list_entities` with domain 'calendar'.
+
+    Args:
+        entity_id: The calendar, e.g. 'calendar.family'.
+        start: Start of the window, ISO 8601 or 'YYYY-MM-DD'; default now.
+        end: End of the window; or
+        days: its length in days from `start`.
+    """
+    return await c(
+        views.CalendarEventsView,
+        "get",
+        query={"start": start, "end": end, "days": days},
+        entity_id=entity_id,
+    )
+
+
+@tool
+async def create_calendar_event(c, entity_id: str, event: dict[str, Any]) -> Any:
+    """Add an event to a calendar that takes changes (the local calendar,
+    Google Calendar, ...); a read-only calendar refuses.
+
+    Args:
+        event: {"summary": "...", "start": ..., "end": ...} and optionally
+            `description`, `location` and `rrule` (e.g. 'FREQ=WEEKLY').
+            `start` and `end` are both times ('2026-12-01T10:00:00+01:00') or
+            both dates for an all-day event ('2026-12-01' to '2026-12-02':
+            the end is the day after the last day).
+    """
+    return await c(views.CalendarEventsView, "post", body=event, entity_id=entity_id)
+
+
+@tool
+async def update_calendar_event(
+    c,
+    entity_id: str,
+    uid: str,
+    event: dict[str, Any],
+    recurrence_id: str | None = None,
+    recurrence_range: str | None = None,
+) -> Any:
+    """Replace an event of a calendar: `event` is the whole event as for
+    `create_calendar_event`, not only what changes.
+
+    Args:
+        uid: The `uid` of the event (from `get_calendar_events`).
+        recurrence_id: For a recurring event: the occurrence to change
+            (from `get_calendar_events`); without it the whole series changes.
+        recurrence_range: 'THISANDFUTURE' to change that occurrence and the
+            later ones.
+    """
+    return await c(
+        views.CalendarEventItemView,
+        "put",
+        query={"recurrence_id": recurrence_id, "recurrence_range": recurrence_range},
+        body=event,
+        entity_id=entity_id,
+        uid=uid,
+    )
+
+
+@tool
+async def delete_calendar_event(
+    c,
+    entity_id: str,
+    uid: str,
+    recurrence_id: str | None = None,
+    recurrence_range: str | None = None,
+) -> Any:
+    """Delete an event of a calendar, named by its `uid`. For a recurring
+    event `recurrence_id` and `recurrence_range` pick the occurrences, as for
+    `update_calendar_event`; without them the whole series goes."""
+    return await c(
+        views.CalendarEventItemView,
+        "delete",
+        query={"recurrence_id": recurrence_id, "recurrence_range": recurrence_range},
+        entity_id=entity_id,
+        uid=uid,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registry management
 # ---------------------------------------------------------------------------
 
@@ -757,13 +1009,15 @@ async def list_registry_entities(
     area_id: str | None = None,
     config_entry_id: str | None = None,
     disabled: bool | None = None,
+    label: str | None = None,
 ) -> Any:
     """List entries from HA's entity_registry with full details.
 
     Returns each entity with `unique_id`, `platform` (integration name),
     `device_id`, `area_id`, `name` (user-set), `original_name` (from
-    integration), `disabled_by`, `hidden_by`, `config_entry_id`. Use this
-    to find duplicates, orphans, or filter by integration.
+    integration), `disabled_by`, `hidden_by`, `config_entry_id`, `labels`.
+    Use this to find duplicates, orphans, or filter by integration or by
+    `label` (a label id from `list_labels`).
     """
     return await c(
         views.EntityRegistryListView,
@@ -775,6 +1029,7 @@ async def list_registry_entities(
             "area_id": area_id,
             "config_entry_id": config_entry_id,
             "disabled": disabled,
+            "label": label,
         },
     )
 
@@ -789,7 +1044,8 @@ async def get_registry_entity(c, entity_id: str) -> Any:
 async def update_registry_entity(c, entity_id: str, changes: dict[str, Any]) -> Any:
     """Mutate a registry entity. Supported keys in `changes`:
     `name`, `icon`, `area_id`, `new_entity_id` (rename),
-    `disabled_by` (bool), `hidden_by` (bool).
+    `disabled_by` (bool), `hidden_by` (bool), `labels` (the full list of
+    label ids the entity is to carry; [] takes them all off).
     """
     return await c(
         views.EntityRegistryItemView, "patch", body=changes, entity_id=entity_id
@@ -813,13 +1069,14 @@ async def list_devices(
     integration: str | None = None,
     config_entry_id: str | None = None,
     disabled: bool | None = None,
+    label: str | None = None,
 ) -> Any:
     """List devices from HA's device_registry.
 
     Each item has `id`, `name`, `name_by_user`, `manufacturer`, `model`,
     `area_id`, `config_entries` (list of entry ids), `identifiers`,
-    `connections`, `disabled_by`. Filter by integration to scope (e.g.
-    'tuya' to find all Tuya devices).
+    `connections`, `disabled_by`, `labels`. Filter by integration to scope
+    (e.g. 'tuya' to find all Tuya devices) or by `label` (a label id).
     """
     return await c(
         views.DeviceRegistryListView,
@@ -831,6 +1088,7 @@ async def list_devices(
             "integration": integration,
             "config_entry_id": config_entry_id,
             "disabled": disabled,
+            "label": label,
         },
     )
 
@@ -844,7 +1102,8 @@ async def get_device(c, device_id: str) -> Any:
 @tool
 async def update_device(c, device_id: str, changes: dict[str, Any]) -> Any:
     """Mutate a device. Supported keys: `name_by_user`, `area_id`,
-    `disabled_by` (bool)."""
+    `disabled_by` (bool), `labels` (the full list of label ids the device
+    is to carry; [] takes them all off)."""
     return await c(
         views.DeviceRegistryItemView, "patch", body=changes, device_id=device_id
     )

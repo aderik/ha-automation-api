@@ -11,8 +11,8 @@ A Home Assistant custom integration that lets AI agents (Claude, Cursor or any
 other MCP client) and scripts (n8n, Make, CI pipelines) configure Home
 Assistant. It exposes a REST API for what the built-in API leaves out:
 automations, scripts, scenes, helpers, template entities, Lovelace
-dashboards, registries, integrations, the Marketplace (HACS), and history,
-statistics, traces and logs.
+dashboards, registries, labels, zones, to-do lists, calendars, integrations,
+the Marketplace (HACS), and history, statistics, traces and logs.
 
 It writes no configuration files of its own. Everything is handed to the
 part of Home Assistant that owns it, the way the UI does: the config API of
@@ -30,12 +30,13 @@ process to run.
   scripts and scenes, saved exactly as their editors in the UI save them
 - Control devices: any service, several calls at once, and a check on
   whether the entities followed
-- Helpers (`input_*`), template entities and `history_stats` sensors as
-  ordinary UI helpers
+- Helpers (`input_*`, counters, timers, schedules), template entities and
+  `history_stats` sensors as ordinary UI helpers
 - Storage-mode Lovelace dashboards: dashboards, views and cards, a patch
   for a change at any depth, and the resources of custom cards
 - Entity, device and config-entry registries, including reload, enable,
   disable and remove
+- Labels and zones, the items of to-do lists and the events of calendars
 - Adding integrations through their config flows, including discovered ones
 - Searching the Marketplace or HACS, with a link to the page where you
   install or remove a repository
@@ -79,9 +80,9 @@ The token must belong to an administrator; other tokens receive `401`.
 
 The header does more than open the door. What belongs to another
 integration is asked of that integration, as the caller: automations,
-scripts, scenes, `input_*` helpers, creating and changing dashboards, the
-store, Matter, the energy settings, notifications, history, statistics,
-traces and logs. For those this integration connects to Home Assistant's
+scripts, scenes, helpers, zones, to-do lists, calendars, creating and
+changing dashboards, the store, Matter, the energy settings, notifications,
+history, statistics, traces and logs. For those this integration connects to Home Assistant's
 own API with the token of the request and passes the request on, so Home
 Assistant carries it out as that user, with its own validation and
 permission checks. A request without `Authorization: Bearer` is refused
@@ -175,12 +176,12 @@ Helpers are ordinary UI helpers, as made under *Settings → Devices & services
 | `GET` `POST` | `/api/automation_api/history_stats` | List `history_stats` sensors, or create one |
 | `GET` `PUT` `DELETE` | `/api/automation_api/history_stats/{entry_id}` | Read, change the options of, or delete a `history_stats` sensor |
 
-#### `input_*` helpers
+#### `input_*` helpers, counters, timers and schedules
 
 `input_boolean`, `input_button`, `input_datetime`, `input_number`,
-`input_select` and `input_text` helpers are created, changed and deleted
-with the WebSocket commands of their integration, sent with the access token
-of the request.
+`input_select`, `input_text`, `counter`, `timer` and `schedule` helpers are
+created, changed and deleted with the WebSocket commands of their
+integration, sent with the access token of the request.
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -321,10 +322,10 @@ or HACS gets its resource from the store; leave those to it.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/automation_api/entity_registry?domain=&platform=&device_id=&area_id=&config_entry_id=&disabled=` | List registry entities |
-| `GET` `PATCH` `DELETE` | `/api/automation_api/entity_registry/{entity_id}` | Read, update (`name`, `icon`, `area_id`, `new_entity_id`, `disabled_by`, `hidden_by`) or remove |
-| `GET` | `/api/automation_api/device_registry?area_id=&manufacturer=&model=&integration=&config_entry_id=&disabled=` | List devices |
-| `GET` `PATCH` `DELETE` | `/api/automation_api/device_registry/{device_id}` | Read, update (`name_by_user`, `area_id`, `disabled_by`) or remove with its entities |
+| `GET` | `/api/automation_api/entity_registry?domain=&platform=&device_id=&area_id=&config_entry_id=&disabled=&label=` | List registry entities |
+| `GET` `PATCH` `DELETE` | `/api/automation_api/entity_registry/{entity_id}` | Read, update (`name`, `icon`, `area_id`, `new_entity_id`, `disabled_by`, `hidden_by`, `labels`) or remove |
+| `GET` | `/api/automation_api/device_registry?area_id=&manufacturer=&model=&integration=&config_entry_id=&disabled=&label=` | List devices |
+| `GET` `PATCH` `DELETE` | `/api/automation_api/device_registry/{device_id}` | Read, update (`name_by_user`, `area_id`, `disabled_by`, `labels`) or remove with its entities |
 | `GET` | `/api/automation_api/config_entries?domain=` | List integrations, with `reason` when setup failed or is retrying |
 | `GET` `DELETE` | `/api/automation_api/config_entries/{entry_id}` | Read, or remove with all its devices and entities |
 | `POST` | `/api/automation_api/config_entries/{entry_id}/reconfigure` | Start the integration's own reconfigure flow |
@@ -344,6 +345,75 @@ integration without a reconfigure step, remove the entry and add it again.
 Removing a registry entity while its integration is still active lets the
 integration re-add it on the next reload; remove the device or the config
 entry instead.
+
+### Labels and zones
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` `POST` | `/api/automation_api/labels` | List the labels, or create one (`{name, color?, icon?, description?}`) |
+| `PUT` `DELETE` | `/api/automation_api/labels/{label_id}` | Change the given fields of a label, or delete it |
+| `GET` `POST` | `/api/automation_api/helpers/zone` | List the zones, or create one (`{name, latitude, longitude, radius?, passive?, icon?}`) |
+| `GET` `PUT` `DELETE` | `/api/automation_api/helpers/zone/{id}` | Read a zone, change the given fields, or delete it |
+
+Labels live in Home Assistant's label registry. Which entities and devices
+carry a label is kept on the entity and the device: send the full list of
+label ids as `labels` in a `PATCH` to the [registries](#registries) (an
+empty list takes them all off), and filter those lists with `?label=`.
+Deleting a label takes it off everything that carried it.
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  http://ha:8123/api/automation_api/labels -d '{"name":"Low battery","color":"red"}'
+# {"status":"ok","label":{"label_id":"low_battery","name":"Low battery","color":"red", ...}}
+
+curl -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  http://ha:8123/api/automation_api/entity_registry/sensor.door_battery \
+  -d '{"labels":["low_battery"]}'
+```
+
+Zones are kept like the helpers above and use the same endpoints, with
+`zone` as the domain. The Home zone is the location of Home Assistant itself
+and is not among them; neither are zones defined in YAML.
+
+### To-do lists and calendars
+
+A to-do list or a calendar is an entity of some integration (a local list,
+the shopping list, Google Tasks, a local calendar, Google Calendar, CalDAV,
+...). List them with `/entities?domain=todo` or `domain=calendar`; make a
+local one with the [config flow endpoints](#adding-integrations-config-flows)
+(`local_todo`, `local_calendar`). The integration behind the list or
+calendar does the work, and refuses what it can't do.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/automation_api/todo/{entity_id}/items?status=` | The items of a list; `status` is `needs_action` or `completed` |
+| `POST` | `/api/automation_api/todo/{entity_id}/items` | Add an item (`{item, due_date?, due_datetime?, description?}`) |
+| `PUT` `DELETE` | `/api/automation_api/todo/{entity_id}/items/{item}` | Change an item (`{rename?, status?, due_date?, due_datetime?, description?}`) or remove it; `item` is its `uid` or its text |
+| `GET` | `/api/automation_api/calendars/{entity_id}/events?start=&end=&days=` | The events in a window; by default the coming 7 days |
+| `POST` | `/api/automation_api/calendars/{entity_id}/events` | Add an event (`{summary, start, end, description?, location?, rrule?}`) |
+| `PUT` `DELETE` | `/api/automation_api/calendars/{entity_id}/events/{uid}?recurrence_id=&recurrence_range=` | Replace an event (body: the whole event) or delete it |
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  http://ha:8123/api/automation_api/todo/todo.shopping_list/items -d '{"item":"Milk"}'
+
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://ha:8123/api/automation_api/calendars/calendar.family/events?days=14"
+# {"entity_id":"calendar.family","start":"...","end":"...","events":[
+#   {"summary":"Dentist","start":"2026-12-01T10:00:00+01:00","end":"2026-12-01T11:00:00+01:00","uid":"..."}]}
+```
+
+The `start` and `end` of an event are both times, or both dates for an
+all-day event; the end date is the day after the last day. For a recurring
+event every occurrence in the window is listed with the `uid` of the series
+and its own `recurrence_id`. A change or delete without `recurrence_id`
+applies to the whole series, with it to that occurrence, and with
+`recurrence_range=THISANDFUTURE` also to the later ones.
+
+Items are read with the `todo/item/list` WebSocket command and changed with
+the `todo.*` services; events are read with Home Assistant's
+`/api/calendars` endpoint and changed with the `calendar/event/*` WebSocket
+commands.
 
 ### Adding integrations (config flows)
 
@@ -595,7 +665,7 @@ There is no endpoint that deletes statistics.
 ## MCP server
 
 The integration serves an MCP server over Streamable HTTP at
-`/api/automation_api/mcp`. It offers 86 tools: one for every REST endpoint,
+`/api/automation_api/mcp`. It offers 100 tools: one for every REST endpoint,
 plus four for controlling devices. It uses the same administrator bearer
 token. A tool runs its REST endpoint in-process, so both behave the same.
 
@@ -647,7 +717,7 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | Automations | Yes | No | Yes |
 | Scripts and scenes | Yes | No | Yes |
 | Blueprints | No | No | Yes |
-| `input_*` helpers | Yes, as UI helpers | No | Yes, as UI helpers |
+| `input_*`, counter, timer and schedule helpers | Yes, as UI helpers | No | Yes, as UI helpers |
 | Template entities, `history_stats` | Yes, as UI helpers | No | Template helpers |
 | Other helpers (groups, `statistics`, ...) | Through the config flow tools | No | Yes |
 | Dashboards | Yes | No | Yes |
@@ -659,9 +729,10 @@ and the community maintains [ha-mcp](https://github.com/homeassistant-ai/ha-mcp)
 | History, statistics, traces and logs | Yes | No | Yes |
 | Repair statistics (adjust a sum, import hours) | Yes | No | Yes |
 | Repairs and notifications | Read both; fix a statistic's unit | No | Read repairs |
-| Backups, add-ons, labels, zones, calendars, to-dos | No | No | Yes |
+| Labels, zones, calendars and to-do lists | Yes | No | Yes |
+| Backups and add-ons | No | No | Yes |
 | Safeguards | Admin only, Home Assistant validates every change, repairs to statistics are a dry run first, action log | Exposed entities only | Read-only mode, per-tool switches, approval policies, edit backups |
-| Tools | 86 | Depends on Assist | 87 |
+| Tools | 100 | Depends on Assist | 87 |
 
 Use the built-in server to control exposed devices, ha-mcp for the broadest
 toolset, and Automation API when you also want a plain REST API (n8n, Make,

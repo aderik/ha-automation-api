@@ -49,7 +49,23 @@ def _entity_to_dict(entry) -> dict[str, Any]:
         "entity_category": _enum_str(entry.entity_category),
         "config_entry_id": entry.config_entry_id,
         "has_entity_name": getattr(entry, "has_entity_name", False),
+        "labels": sorted(getattr(entry, "labels", ())),
     }
+
+
+def _label_ids(hass: HomeAssistant, labels: Any) -> set[str]:
+    """The full set of labels for an entity or device; each has to exist."""
+    if not isinstance(labels, list) or not all(isinstance(i, str) for i in labels):
+        raise ValueError("'labels' must be a list of label ids")
+    registry = _label_registry(hass)
+    if unknown := [i for i in labels if registry.async_get_label(i) is None]:
+        raise ValueError(f"there is no label {unknown}; see the list of labels")
+    return set(labels)
+
+
+def _label_registry(hass: HomeAssistant):
+    from homeassistant.helpers import label_registry as lr
+    return lr.async_get(hass)
 
 
 def _entity_registry(hass: HomeAssistant):
@@ -66,10 +82,13 @@ async def list_entities(
     area_id: str | None = None,
     config_entry_id: str | None = None,
     disabled: bool | None = None,
+    label: str | None = None,
 ) -> list[dict]:
     reg = _entity_registry(hass)
     out: list[dict] = []
     for ent in reg.entities.values():
+        if label and label not in ent.labels:
+            continue
         if domain and ent.domain != domain:
             continue
         if platform and ent.platform != platform:
@@ -108,6 +127,8 @@ async def update_entity(
     for k in ("name", "icon", "area_id", "new_entity_id"):
         if k in changes:
             kwargs[k] = changes[k]
+    if "labels" in changes:
+        kwargs["labels"] = _label_ids(hass, changes["labels"])
     if "disabled_by" in changes:
         v = changes["disabled_by"]
         kwargs["disabled_by"] = RegistryEntryDisabler.USER if v else None
@@ -146,6 +167,7 @@ def _device_to_dict(dev) -> dict[str, Any]:
         "config_entries": list(dev.config_entries),
         "disabled_by": _enum_str(dev.disabled_by),
         "via_device_id": dev.via_device_id,
+        "labels": sorted(getattr(dev, "labels", ())),
     }
 
 
@@ -171,6 +193,7 @@ async def list_devices(
     integration: str | None = None,
     config_entry_id: str | None = None,
     disabled: bool | None = None,
+    label: str | None = None,
 ) -> list[dict]:
     reg = _device_registry(hass)
     integration_entries: set[str] | None = None
@@ -180,6 +203,8 @@ async def list_devices(
         }
     out: list[dict] = []
     for dev in _iter_devices(reg):
+        if label and label not in dev.labels:
+            continue
         if area_id and dev.area_id != area_id:
             continue
         if manufacturer and (dev.manufacturer or "").lower() != manufacturer.lower():
@@ -215,6 +240,8 @@ async def update_device(
     for k in ("name_by_user", "area_id"):
         if k in changes:
             kwargs[k] = changes[k]
+    if "labels" in changes:
+        kwargs["labels"] = _label_ids(hass, changes["labels"])
     if "disabled_by" in changes:
         v = changes["disabled_by"]
         kwargs["disabled_by"] = DeviceEntryDisabler.USER if v else None
